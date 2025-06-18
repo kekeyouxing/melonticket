@@ -2,9 +2,7 @@ pyppeteer==1.0.2
 python-dotenv==1.0.0
 Pillow>=9.0.0
 
-# 可选依赖 - 用于验证码识别 (根据需要安装)
-# pytesseract>=0.3.10  # OCR 识别库
-# easyocr>=1.7.0       # 另一个 OCR 识别库
-# numpy>=1.21.0        # easyocr 依赖
+# 验证码识别依赖
+ddddocr>=1.4.11
 requests==2.31.0
 beautifulsoup4==4.12.2 

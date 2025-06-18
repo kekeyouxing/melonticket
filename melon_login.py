@@ -1,6 +1,10 @@
 import asyncio
 import json
 import os
+import base64
+from io import BytesIO
+from PIL import Image
+import ddddocr
 from pyppeteer import launch
 from config import Config
 
@@ -10,6 +14,7 @@ class MelonLogin:
     def __init__(self):
         self.browser = None
         self.page = None
+        self.ocr = ddddocr.DdddOcr(show_ad=False)
         
     async def init_browser(self):
         """初始化浏览器"""
@@ -53,7 +58,15 @@ class MelonLogin:
             # 初始化浏览器
             await self.init_browser()
             self.page = await self.browser.newPage()
-            await self.page.setViewport({'width': 1366, 'height': 768})
+            
+            # 获取浏览器窗口大小并设置viewport
+            window_size = await self.page.evaluate('''() => {
+                return {
+                    width: window.screen.availWidth || 1366,
+                    height: window.screen.availHeight || 768
+                }
+            }''')
+            await self.page.setViewport(window_size)
             
             # 尝试加载已保存的cookies
             cookies_loaded = await self.load_cookies()
@@ -97,22 +110,128 @@ class MelonLogin:
                 return False
             else:
                 print("✅ 登录成功！")
-                
-                # 保存cookies
                 await self.save_cookies()
-                
-                # 跳转到目标页面
-                if Config.MELON_BASE_URL not in current_url:
-                    print("🔗 正在跳转到目标页面...")
-                    await self.page.goto(Config.MELON_BASE_URL, {'waitUntil': 'domcontentloaded'})
-                    print("✅ 已跳转到目标页面")
-                
                 return True
                 
         except Exception as e:
             print(f"❌ 登录过程中发生错误: {e}")
             return False
             
+    async def reserve_ticket(self):
+        """预约票务"""
+        try:
+            print("🎫 开始预约流程...")
+            await self.page.goto(Config.MELON_BASE_URL, {'waitUntil': 'domcontentloaded'})
+            
+            # 等待并点击日期列表第一个选项
+            await self.page.waitForSelector('#list_date li:first-child')
+            await self.page.click('#list_date li:first-child')
+            print("✅ 已选择日期")
+            
+            # 等待并点击时间列表第一个选项
+            await self.page.waitForSelector('#list_time li:first-child')
+            await self.page.click('#list_time li:first-child')
+            print("✅ 已选择时间")
+            
+            # 等待并点击预约按钮
+            await self.page.waitForSelector('#ticketReservation_Btn')
+            await self.page.click('#ticketReservation_Btn')
+            print("✅ 已点击预约按钮")
+            
+            return True
+        except Exception as e:
+            print(f"❌ 预约过程中发生错误: {e}")
+            return False
+    
+    async def get_popup_page(self):
+        """获取弹窗页面"""
+        await asyncio.sleep(2)
+        pages = await self.browser.pages()
+        for page in pages:
+            if 'onestop.htm' in page.url:
+                print("✅ 已获取弹窗页面")
+                return page
+        print("⚠️ 未找到弹窗页面")
+        return None
+    
+    def add_white_background(self, base64_str):
+        """为验证码图片添加白色背景，以提高识别准确率"""
+        img_bytes = base64.b64decode(base64_str)
+        img = Image.open(BytesIO(img_bytes))
+        bg = Image.new('RGBA', img.size, (255, 255, 255, 255))
+        bg.paste(img, (0, 0), img)
+        return bg
+
+    def recognize(self, base64_str):
+        """识别验证码"""
+        value = self.add_white_background(base64_str)
+        return self.ocr.classification(value)
+
+    async def handle_captcha(self, popup_page):
+        """处理验证码，支持重试机制"""
+        max_retries = 5  # 最大重试次数
+        
+        for attempt in range(max_retries):
+            try:
+                print(f"🔍 开始处理验证码... (第{attempt + 1}次尝试)")
+                
+                # 等待验证码图片加载
+                await popup_page.waitForSelector('#captchaImg')
+                
+                # 获取验证码图片的base64数据
+                captcha_src = await popup_page.evaluate('document.querySelector("#captchaImg").src')
+                
+                # 提取base64数据部分
+                base64_data = captcha_src.split('base64,')[1]
+                
+                # 使用OCR识别文字
+                captcha_text = self.recognize(base64_data).upper()
+                
+                print(f"🔤 识别到验证码: {captcha_text}")
+                
+                # 清空并填入验证码
+                await popup_page.evaluate('document.querySelector("#label-for-captcha").value = ""')
+                await popup_page.type('#label-for-captcha', captcha_text)
+                print("✅ 已填入验证码")
+                
+                # 点击完成按钮
+                await popup_page.click('#btnComplete')
+                print("✅ 已点击完成按钮")
+                
+                # 等待一下，检查验证码是否成功
+                await popup_page.waitFor(1000)
+                
+                # 检查验证码验证是否成功 (certification元素是否隐藏)
+                certification_style = await popup_page.evaluate('document.querySelector("#certification").style.display')
+                
+                if certification_style == "none":
+                    print("🎉 验证码验证成功！")
+                    return True
+                else:
+                    print(f"❌ 验证码验证失败，准备重试... (剩余{max_retries - attempt - 1}次)")
+                    
+                    # 如果不是最后一次尝试，点击刷新按钮获取新验证码
+                    if attempt < max_retries - 1:
+                        await popup_page.click('#btnReload')
+                        print("🔄 已刷新验证码")
+                        # 等待新验证码加载
+                        await popup_page.waitFor(1000)
+                
+            except Exception as e:
+                print(f"❌ 验证码处理异常: {e}")
+                
+                # 如果不是最后一次尝试，点击刷新按钮获取新验证码
+                if attempt < max_retries - 1:
+                    try:
+                        await popup_page.click('#btnReload')
+                        print("🔄 已刷新验证码")
+                        await popup_page.waitFor(1000)
+                    except:
+                        pass
+        
+        print(f"❌ 验证码处理失败，已重试{max_retries}次")
+        return False
+    
     async def close(self):
         """关闭浏览器"""
         if self.browser:
@@ -126,12 +245,31 @@ async def main():
         success = await login_manager.login()
         
         if success:
-            print("🎉 登录流程完成！")
+            print("🎉 登录完成！")
             
-            # 询问是否保持会话
-            keep_alive = input("是否需要保持浏览器开启？(y/n): ").lower().strip()
-            if keep_alive == 'y':
-                input("按回车键关闭浏览器...")
+            # 执行预约流程
+            reserve_success = await login_manager.reserve_ticket()
+            
+            if reserve_success:
+                print("🎉 预约流程完成！")
+                
+                # 获取弹窗页面
+                popup_page = await login_manager.get_popup_page()
+                
+                if popup_page:
+                    print("🎉 已获取弹窗页面，可以继续操作")
+                    
+                    # 处理验证码
+                    captcha_success = await login_manager.handle_captcha(popup_page)
+                    if captcha_success:
+                        print("🎉 验证码处理完成！")
+                    else:
+                        print("💔 验证码处理失败")
+                
+            else:
+                print("💔 预约失败")
+                
+            input("按回车键关闭浏览器...")
         else:
             print("💔 登录失败")
             
