@@ -16,13 +16,21 @@ class MelonLogin:
         self.browser = None
         self.page = None
         self.ocr = ddddocr.DdddOcr(show_ad=False)
+        self.iframe_element = None  # 存储iframe元素
         
     async def init_browser(self):
         """初始化浏览器"""
         self.browser = await launch(
             headless=Config.HEADLESS_MODE,
             executablePath='/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary',
-            args=['--no-sandbox', '--disable-setuid-sandbox']
+            args=[
+                '--no-sandbox', 
+                '--disable-setuid-sandbox',
+                '--start-maximized',  # 启动时最大化窗口
+                '--disable-web-security',  # 禁用web安全
+                '--disable-features=VizDisplayCompositor'  # 改善渲染
+            ],
+            defaultViewport=None  # 使用完整窗口大小
         )
         
     async def load_cookies(self):
@@ -60,14 +68,8 @@ class MelonLogin:
             await self.init_browser()
             self.page = await self.browser.newPage()
             
-            # 获取浏览器窗口大小并设置viewport
-            # window_size = await self.page.evaluate('''() => {
-            #     return {
-            #         width: window.screen.availWidth || 1920,
-            #         height: window.screen.availHeight || 768
-            #     }
-            # }''')
-            # await self.page.setViewport(window_size)
+            # 设置视口大小为常见的全屏分辨率
+            await self.page.setViewport({'width': 1920, 'height': 1080})
             
             # 尝试加载已保存的cookies
             cookies_loaded = await self.load_cookies()
@@ -261,124 +263,113 @@ class MelonLogin:
         except Exception as e:
             print(f"⚠️ 关闭弹窗时出错: {e}")
 
-    async def select_seat_zone(self, popup_page):
-        """选择座位区域"""
+    async def get_iframe(self, popup_page):
+        """获取iframe元素"""
         try:
-            print("🎯 开始选择座位区域...")
-            
             # 等待iframe加载
             await popup_page.waitForSelector('#oneStopFrame', {'timeout': 30000})
             print("✅ iframe已加载")
             
-            # 获取iframe的内容
-            iframe_element = await popup_page.querySelector('#oneStopFrame')
-            iframe_content = await iframe_element.contentFrame()
+            # 获取iframe元素
+            self.iframe_element = await popup_page.querySelector('#oneStopFrame')
             
-            if not iframe_content:
-                print("❌ 无法获取iframe内容")
+            if not self.iframe_element:
+                print("❌ 无法获取iframe元素")
+                return None
+            
+            print("✅ 已获取iframe元素，现在可以通过self.iframe_element访问")
+            return self.iframe_element
+            
+        except Exception as e:
+            print(f"❌ 获取iframe失败: {e}")
+            return None
+    
+    async def select_seat_zone(self, iframe_element):
+        """选择座位区域"""
+        try:
+            print("🎯 开始选择座位区域...")
+            
+            if not iframe_element:
+                print("❌ iframe_element为空")
                 return False
             
-            print("✅ 已获取iframe内容")
+            # 获取iframe的contentFrame
+            iframe_frame = await iframe_element.contentFrame()
+            if not iframe_frame:
+                print("❌ 无法获取iframe frame")
+                return False
             
             # 在iframe内等待座位区域画布加载
-            await iframe_content.waitForSelector('#ez_canvas_zone', {'timeout': 30000})
+            await iframe_frame.waitForSelector('#ez_canvas_zone svg', {'timeout': 30000})
             print("✅ 座位区域画布已加载")
             
-            # 获取所有rect元素
-            clickable_rects = await iframe_content.evaluate('''() => {
-                const svgElement = document.querySelector('#ez_canvas_zone svg');
-                if (!svgElement) return [];
-                
-                const rects = Array.from(svgElement.querySelectorAll('rect'));
-                return rects.map((rect, index) => ({
-                    index: index,
-                    x: parseFloat(rect.getAttribute('x')),
-                    y: parseFloat(rect.getAttribute('y')),
-                    width: parseFloat(rect.getAttribute('width')),
-                    height: parseFloat(rect.getAttribute('height')),
-                    fill: rect.getAttribute('fill')
-                }));
-            }''')
+            # 使用原生API获取所有rect元素
+            rect_elements = await iframe_frame.querySelectorAll('#ez_canvas_zone svg rect')
+            path_elements = await iframe_frame.querySelectorAll('#ez_canvas_zone svg path')
             
-            if len(clickable_rects) == 0:
+            print(f"📍 找到 {len(rect_elements)} 个rect元素和 {len(path_elements)} 个path元素")
+            
+            # 合并所有元素
+            all_elements = rect_elements + path_elements
+            
+            if len(all_elements) == 0:
+                print("❌ 未找到任何SVG元素")
+                return False
+            
+                        # 过滤可点击元素（检查cursor:pointer）
+            clickable_elements = []
+            for element in all_elements:
+                # 检查元素的cursor样式
+                cursor_style = await iframe_frame.evaluate('''(el) => {
+                    // 模拟hover来检查cursor
+                    const event = new MouseEvent('mouseover', {
+                        bubbles: true,
+                        cancelable: true,
+                        view: window
+                    });
+                    el.dispatchEvent(event);
+                    
+                    // 获取计算后的样式
+                    const computedStyle = window.getComputedStyle(el);
+                    return computedStyle.cursor;
+                }''', element)
+                
+                if cursor_style == 'pointer':
+                    clickable_elements.append(element)
+            
+            if len(clickable_elements) == 0:
                 print("❌ 未找到可点击的座位区域")
                 return False
             
-            print(f"📍 找到 {len(clickable_rects)} 个可点击的座位区域")
+            print(f"📍 找到 {len(clickable_elements)} 个可点击的座位区域")
             
-            # 按y坐标排序，选择位置靠前的区域
-            sorted_rects = sorted(clickable_rects, key=lambda rect: rect['y'])
+            # 随机选择一个可点击的元素
+            selected_element = random.choice(clickable_elements)
             
-            # 选择前30%的区域，如果总数少于3个则选择前一半
-            front_count = max(1, min(len(sorted_rects) // 3, len(sorted_rects) // 2 + 1))
-            if len(sorted_rects) >= 3:
-                front_count = max(1, len(sorted_rects) // 3)
-            else:
-                front_count = len(sorted_rects)
+            # 获取元素信息用于日志
+            tag_name = await iframe_frame.evaluate('(element) => element.tagName', selected_element)
+            fill_color = await iframe_frame.evaluate('(el) => el.getAttribute("fill")', selected_element)
+            print(f"🎯 随机选择: 类型 {tag_name}, 颜色 {fill_color}")
             
-            front_rects = sorted_rects[:front_count]
+            # 直接在元素上模拟点击事件 - 点击两次
+            await iframe_frame.evaluate('''(element) => {
+                // 创建鼠标点击事件
+                const mouseEvent = new MouseEvent('click', {
+                    bubbles: true,
+                    cancelable: true,
+                    view: window
+                });
+                 
+                // 第一次点击
+                element.dispatchEvent(mouseEvent);
+            }''', selected_element)
             
-            # 从靠前的区域中随机选择一个
-            selected_rect = random.choice(front_rects)
-            print(f"🎯 优先选择靠前区域: 索引 {selected_rect['index']}, 坐标 ({selected_rect['x']}, {selected_rect['y']}), 颜色 {selected_rect['fill']}")
-            print(f"📊 从前 {front_count}/{len(clickable_rects)} 个靠前区域中选择")
-            
-            # 获取目标rect元素的句柄
-            target_rect_handle = await iframe_content.evaluateHandle(f'''(selectedIndex) => {{
-                const svgElement = document.querySelector('#ez_canvas_zone svg');
-                if (!svgElement) return null;
-                
-                const rects = Array.from(svgElement.querySelectorAll('rect'));
-                if (selectedIndex >= rects.length) return null;
-                
-                return rects[selectedIndex];
-            }}''', selected_rect['index'])
-            
-            if not target_rect_handle:
-                print("❌ 无法获取目标rect元素")
-                return False
-            
-            # 计算SVG坐标并使用真实鼠标点击
-            coordinates = await iframe_content.evaluate('''(targetRect) => {
-                try {
-                    const svg = targetRect.ownerSVGElement;
-                    const svgRect = svg.getBoundingClientRect();
-                    
-                    // 获取rect中心点 (SVG坐标系)
-                    const x = parseFloat(targetRect.getAttribute('x'));
-                    const y = parseFloat(targetRect.getAttribute('y'));
-                    const w = parseFloat(targetRect.getAttribute('width'));
-                    const h = parseFloat(targetRect.getAttribute('height'));
-                    const centerX = x + w / 2;
-                    const centerY = y + h / 2;
-                    
-                    // 从viewBox转换到页面坐标
-                    const viewBox = svg.viewBox.baseVal;
-                    const scaleX = svgRect.width / viewBox.width;
-                    const scaleY = svgRect.height / viewBox.height;
-                    const pageX = svgRect.x + centerX * scaleX;
-                    const pageY = svgRect.y + centerY * scaleY;
-                    
-                    console.log(`计算坐标: SVG(${centerX.toFixed(1)}, ${centerY.toFixed(1)}) → 页面(${pageX.toFixed(1)}, ${pageY.toFixed(1)})`);
-                    
-                    return {pageX: pageX, pageY: pageY};
-                } catch (e) {
-                    console.error('坐标计算失败:', e);
-                    return null;
-                }
-            }''', target_rect_handle)
-            
-            if coordinates:
-                print(f"🖱️ 双击坐标: ({coordinates['pageX']:.1f}, {coordinates['pageY']:.1f})")
-                await popup_page.mouse.click(coordinates['pageX'], coordinates['pageY'], {'clickCount': 2})
-                click_result = True
-            else:
-                click_result = False
+            await asyncio.sleep(0.1)  # 稍微等待一下
             
             # 等待页面响应
-            await popup_page.waitFor(1000)
+            await asyncio.sleep(1)
             
-            return click_result
+            return True
             
         except Exception as e:
             print(f"❌ 选择座位区域失败: {e}")
@@ -418,12 +409,19 @@ async def main():
                     if captcha_success:
                         print("🎉 验证码处理完成！")
                         
-                        # 选择座位区域
-                        zone_success = await login_manager.select_seat_zone(popup_page)
-                        if zone_success:
-                            print("🎉 座位区域选择完成！")
+                        # 获取iframe
+                        iframe_element = await login_manager.get_iframe(popup_page)
+                        if iframe_element:
+                            print("🎉 已获取iframe，可以继续操作")
+                            
+                            # 选择座位区域
+                            zone_success = await login_manager.select_seat_zone(iframe_element)
+                            if zone_success:
+                                print("🎉 座位区域选择完成！")
+                            else:
+                                print("💔 座位区域选择失败")
                         else:
-                            print("💔 座位区域选择失败")
+                            print("💔 获取iframe失败")
                     else:
                         print("💔 验证码处理失败")
                 
