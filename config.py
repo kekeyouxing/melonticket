@@ -8,7 +8,7 @@ class Config:
     """配置类，用于管理所有配置信息"""
     
     # Melon网站相关
-    MELON_BASE_URL = "https://ticket.melon.com/performance/index.htm?prodId=211526"
+    MELON_BASE_URL = "https://ticket.melon.com/performance/index.htm?prodId=211506"
     MELON_LOGIN_URL = "https://member.melon.com/muid/web/login/login_informM.htm"
     
     # 用户凭据

@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import base64
+import random
 from io import BytesIO
 from PIL import Image
 import ddddocr
@@ -60,13 +61,13 @@ class MelonLogin:
             self.page = await self.browser.newPage()
             
             # 获取浏览器窗口大小并设置viewport
-            window_size = await self.page.evaluate('''() => {
-                return {
-                    width: window.screen.availWidth || 1366,
-                    height: window.screen.availHeight || 768
-                }
-            }''')
-            await self.page.setViewport(window_size)
+            # window_size = await self.page.evaluate('''() => {
+            #     return {
+            #         width: window.screen.availWidth || 1920,
+            #         height: window.screen.availHeight || 768
+            #     }
+            # }''')
+            # await self.page.setViewport(window_size)
             
             # 尝试加载已保存的cookies
             cookies_loaded = await self.load_cookies()
@@ -122,6 +123,9 @@ class MelonLogin:
         try:
             print("🎫 开始预约流程...")
             await self.page.goto(Config.MELON_BASE_URL, {'waitUntil': 'domcontentloaded'})
+            
+            # 关闭可能出现的提示弹窗
+            await self.close_popup_dialogs(self.page)
             
             # 等待并点击日期列表第一个选项
             await self.page.waitForSelector('#list_date li:first-child')
@@ -232,6 +236,156 @@ class MelonLogin:
         print(f"❌ 验证码处理失败，已重试{max_retries}次")
         return False
     
+    async def close_popup_dialogs(self, page):
+        """检测并关闭提示弹窗"""
+        try:
+            print("🔍 检测提示弹窗...")
+            
+            # 查找并点击关闭按钮
+            closed = await page.evaluate('''() => {
+                const closeBtn = document.getElementById('noticeAlert_layerpopup_close');
+                if (closeBtn && closeBtn.offsetParent !== null) {
+                    closeBtn.click();
+                    console.log('点击了noticeAlert关闭按钮');
+                    return true;
+                }
+                return false;
+            }''')
+            
+            if closed:
+                print("✅ 关闭了noticeAlert弹窗")
+                await page.waitFor(300)
+            else:
+                print("ℹ️ 未发现noticeAlert弹窗")
+                
+        except Exception as e:
+            print(f"⚠️ 关闭弹窗时出错: {e}")
+
+    async def select_seat_zone(self, popup_page):
+        """选择座位区域"""
+        try:
+            print("🎯 开始选择座位区域...")
+            
+            # 等待iframe加载
+            await popup_page.waitForSelector('#oneStopFrame', {'timeout': 30000})
+            print("✅ iframe已加载")
+            
+            # 获取iframe的内容
+            iframe_element = await popup_page.querySelector('#oneStopFrame')
+            iframe_content = await iframe_element.contentFrame()
+            
+            if not iframe_content:
+                print("❌ 无法获取iframe内容")
+                return False
+            
+            print("✅ 已获取iframe内容")
+            
+            # 在iframe内等待座位区域画布加载
+            await iframe_content.waitForSelector('#ez_canvas_zone', {'timeout': 30000})
+            print("✅ 座位区域画布已加载")
+            
+            # 获取所有rect元素
+            clickable_rects = await iframe_content.evaluate('''() => {
+                const svgElement = document.querySelector('#ez_canvas_zone svg');
+                if (!svgElement) return [];
+                
+                const rects = Array.from(svgElement.querySelectorAll('rect'));
+                return rects.map((rect, index) => ({
+                    index: index,
+                    x: parseFloat(rect.getAttribute('x')),
+                    y: parseFloat(rect.getAttribute('y')),
+                    width: parseFloat(rect.getAttribute('width')),
+                    height: parseFloat(rect.getAttribute('height')),
+                    fill: rect.getAttribute('fill')
+                }));
+            }''')
+            
+            if len(clickable_rects) == 0:
+                print("❌ 未找到可点击的座位区域")
+                return False
+            
+            print(f"📍 找到 {len(clickable_rects)} 个可点击的座位区域")
+            
+            # 按y坐标排序，选择位置靠前的区域
+            sorted_rects = sorted(clickable_rects, key=lambda rect: rect['y'])
+            
+            # 选择前30%的区域，如果总数少于3个则选择前一半
+            front_count = max(1, min(len(sorted_rects) // 3, len(sorted_rects) // 2 + 1))
+            if len(sorted_rects) >= 3:
+                front_count = max(1, len(sorted_rects) // 3)
+            else:
+                front_count = len(sorted_rects)
+            
+            front_rects = sorted_rects[:front_count]
+            
+            # 从靠前的区域中随机选择一个
+            selected_rect = random.choice(front_rects)
+            print(f"🎯 优先选择靠前区域: 索引 {selected_rect['index']}, 坐标 ({selected_rect['x']}, {selected_rect['y']}), 颜色 {selected_rect['fill']}")
+            print(f"📊 从前 {front_count}/{len(clickable_rects)} 个靠前区域中选择")
+            
+            # 获取目标rect元素的句柄
+            target_rect_handle = await iframe_content.evaluateHandle(f'''(selectedIndex) => {{
+                const svgElement = document.querySelector('#ez_canvas_zone svg');
+                if (!svgElement) return null;
+                
+                const rects = Array.from(svgElement.querySelectorAll('rect'));
+                if (selectedIndex >= rects.length) return null;
+                
+                return rects[selectedIndex];
+            }}''', selected_rect['index'])
+            
+            if not target_rect_handle:
+                print("❌ 无法获取目标rect元素")
+                return False
+            
+            # 计算SVG坐标并使用真实鼠标点击
+            coordinates = await iframe_content.evaluate('''(targetRect) => {
+                try {
+                    const svg = targetRect.ownerSVGElement;
+                    const svgRect = svg.getBoundingClientRect();
+                    
+                    // 获取rect中心点 (SVG坐标系)
+                    const x = parseFloat(targetRect.getAttribute('x'));
+                    const y = parseFloat(targetRect.getAttribute('y'));
+                    const w = parseFloat(targetRect.getAttribute('width'));
+                    const h = parseFloat(targetRect.getAttribute('height'));
+                    const centerX = x + w / 2;
+                    const centerY = y + h / 2;
+                    
+                    // 从viewBox转换到页面坐标
+                    const viewBox = svg.viewBox.baseVal;
+                    const scaleX = svgRect.width / viewBox.width;
+                    const scaleY = svgRect.height / viewBox.height;
+                    const pageX = svgRect.x + centerX * scaleX;
+                    const pageY = svgRect.y + centerY * scaleY;
+                    
+                    console.log(`计算坐标: SVG(${centerX.toFixed(1)}, ${centerY.toFixed(1)}) → 页面(${pageX.toFixed(1)}, ${pageY.toFixed(1)})`);
+                    
+                    return {pageX: pageX, pageY: pageY};
+                } catch (e) {
+                    console.error('坐标计算失败:', e);
+                    return null;
+                }
+            }''', target_rect_handle)
+            
+            if coordinates:
+                print(f"🖱️ 双击坐标: ({coordinates['pageX']:.1f}, {coordinates['pageY']:.1f})")
+                await popup_page.mouse.click(coordinates['pageX'], coordinates['pageY'], {'clickCount': 2})
+                click_result = True
+            else:
+                click_result = False
+            
+            # 等待页面响应
+            await popup_page.waitFor(1000)
+            
+            return click_result
+            
+        except Exception as e:
+            print(f"❌ 选择座位区域失败: {e}")
+            return False
+    
+
+    
     async def close(self):
         """关闭浏览器"""
         if self.browser:
@@ -263,6 +417,13 @@ async def main():
                     captcha_success = await login_manager.handle_captcha(popup_page)
                     if captcha_success:
                         print("🎉 验证码处理完成！")
+                        
+                        # 选择座位区域
+                        zone_success = await login_manager.select_seat_zone(popup_page)
+                        if zone_success:
+                            print("🎉 座位区域选择完成！")
+                        else:
+                            print("💔 座位区域选择失败")
                     else:
                         print("💔 验证码处理失败")
                 
