@@ -149,15 +149,41 @@ class MelonLogin:
             print(f"❌ 预约过程中发生错误: {e}")
             return False
     
-    async def get_popup_page(self):
-        """获取弹窗页面"""
-        await asyncio.sleep(2)
-        pages = await self.browser.pages()
-        for page in pages:
-            if 'onestop.htm' in page.url:
-                print("✅ 已获取弹窗页面")
-                return page
-        print("⚠️ 未找到弹窗页面")
+    async def get_popup_page(self, max_wait_time=10):
+        """获取弹窗页面，增加重试机制"""
+        print("🔍 等待弹窗页面打开...")
+        
+        for attempt in range(max_wait_time):
+            await asyncio.sleep(1)
+            pages = await self.browser.pages()
+            
+            # 查找新打开的页面（不是主页面的其他页面）
+            for page in pages:
+                if page != self.page:
+                    url = page.url.lower()
+                    # 检查URL是否包含相关关键词
+                    if ('onestop' in url or 'popup' in url or 'reservation' in url or 'ticket' in url):
+                        print(f"✅ 已获取弹窗页面: {page.url}")
+                        return page
+                    
+                    # 如果URL不明确，尝试检查页面内容
+                    try:
+                        # 等待验证码元素出现，如果出现说明是正确的弹窗页面
+                        await page.waitForSelector('#captchaImg', {'timeout': 1000})
+                        print(f"✅ 通过验证码元素确认弹窗页面: {page.url}")
+                        return page
+                    except:
+                        # 检查iframe元素
+                        try:
+                            await page.waitForSelector('#oneStopFrame', {'timeout': 1000})
+                            print(f"✅ 通过iframe元素确认弹窗页面: {page.url}")
+                            return page
+                        except:
+                            continue
+            
+            print(f"⏳ 等待弹窗页面... ({attempt + 1}/{max_wait_time})")
+        
+        print("⚠️ 未找到弹窗页面，可能需要手动检查")
         return None
     
     def add_white_background(self, base64_str):
@@ -284,10 +310,10 @@ class MelonLogin:
             print(f"❌ 获取iframe失败: {e}")
             return None
     
-    async def select_seat_zone(self, iframe_element):
-        """选择座位区域"""
+    async def select_zone_and_seat(self, iframe_element):
+        """选择座位区域并选择座位"""
         try:
-            print("🎯 开始选择座位区域...")
+            print("🎯 开始选择座位区域和座位...")
             
             if not iframe_element:
                 print("❌ iframe_element为空")
@@ -299,83 +325,185 @@ class MelonLogin:
                 print("❌ 无法获取iframe frame")
                 return False
             
-            # 在iframe内等待座位区域画布加载
-            await iframe_frame.waitForSelector('#ez_canvas_zone svg', {'timeout': 30000})
+            # 等待座位区域画布加载
+            await iframe_frame.waitForSelector('#iez_canvas svg', {'timeout': 30000})
             print("✅ 座位区域画布已加载")
             
-            # 使用原生API获取所有rect元素
-            rect_elements = await iframe_frame.querySelectorAll('#ez_canvas_zone svg rect')
-            path_elements = await iframe_frame.querySelectorAll('#ez_canvas_zone svg path')
+            # 获取所有可点击的座位区域
+            all_elements = await iframe_frame.querySelectorAll('#iez_canvas svg rect, #iez_canvas svg path')
+            clickable_zones = []
             
-            print(f"📍 找到 {len(rect_elements)} 个rect元素和 {len(path_elements)} 个path元素")
-            
-            # 合并所有元素
-            all_elements = rect_elements + path_elements
-            
-            if len(all_elements) == 0:
-                print("❌ 未找到任何SVG元素")
-                return False
-            
-                        # 过滤可点击元素（检查cursor:pointer）
-            clickable_elements = []
             for element in all_elements:
-                # 检查元素的cursor样式
                 cursor_style = await iframe_frame.evaluate('''(el) => {
-                    // 模拟hover来检查cursor
-                    const event = new MouseEvent('mouseover', {
-                        bubbles: true,
-                        cancelable: true,
-                        view: window
-                    });
+                    const event = new MouseEvent('mouseover', { bubbles: true, cancelable: true, view: window });
                     el.dispatchEvent(event);
-                    
-                    // 获取计算后的样式
-                    const computedStyle = window.getComputedStyle(el);
-                    return computedStyle.cursor;
+                    return window.getComputedStyle(el).cursor;
                 }''', element)
-                
                 if cursor_style == 'pointer':
-                    clickable_elements.append(element)
+                    clickable_zones.append(element)
             
-            if len(clickable_elements) == 0:
+            if len(clickable_zones) == 0:
                 print("❌ 未找到可点击的座位区域")
                 return False
             
-            print(f"📍 找到 {len(clickable_elements)} 个可点击的座位区域")
+            print(f"📍 找到 {len(clickable_zones)} 个可点击的座位区域")
             
-            # 随机选择一个可点击的元素
-            selected_element = random.choice(clickable_elements)
+            # 按前排中间优先排序
+            zone_positions = []
+            for zone in clickable_zones:
+                pos = await iframe_frame.evaluate('(el) => { const bbox = el.getBBox(); return { centerX: bbox.x + bbox.width/2, centerY: bbox.y + bbox.height/2 }; }', zone)
+                zone_positions.append({'element': zone, 'position': pos})
             
-            # 获取元素信息用于日志
-            tag_name = await iframe_frame.evaluate('(element) => element.tagName', selected_element)
-            fill_color = await iframe_frame.evaluate('(el) => el.getAttribute("fill")', selected_element)
-            print(f"🎯 随机选择: 类型 {tag_name}, 颜色 {fill_color}")
+            svg_bounds = await iframe_frame.evaluate('() => { const svg = document.querySelector("#iez_canvas svg"); const vb = svg.viewBox.baseVal; return { centerX: vb.width/2 }; }')
+            zone_positions.sort(key=lambda x: x['position']['centerY'] * 2 + abs(x['position']['centerX'] - svg_bounds['centerX']))
             
-            # 直接在元素上模拟点击事件 - 点击两次
-            await iframe_frame.evaluate('''(element) => {
-                // 创建鼠标点击事件
-                const mouseEvent = new MouseEvent('click', {
-                    bubbles: true,
-                    cancelable: true,
-                    view: window
-                });
-                 
-                // 第一次点击
-                element.dispatchEvent(mouseEvent);
-            }''', selected_element)
+            # 尝试所有区域直到找到可用座位
+            total_zones = len(zone_positions)
+            print(f"🔄 将依次尝试所有 {total_zones} 个区域")
             
-            await asyncio.sleep(0.1)  # 稍微等待一下
+            for attempt in range(total_zones):
+                selected_zone = zone_positions[attempt]['element']
+                zone_pos = zone_positions[attempt]['position']
+                print(f"🎯 尝试区域 {attempt + 1}/{total_zones} (Y: {zone_pos['centerY']:.1f}, X: {zone_pos['centerX']:.1f})")
+                
+                # 点击区域
+                await iframe_frame.evaluate('(el) => el.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }))', selected_zone)
+                await asyncio.sleep(1)
+                
+                # 检查是否有可用座位
+                try:
+                    await iframe_frame.waitForSelector('#ez_canvas svg', {'timeout': 5000})
+                    available_seats = await iframe_frame.evaluate('''() => {
+                        const rects = document.querySelectorAll('#ez_canvas svg rect');
+                        return Array.from(rects).filter(rect => {
+                            const fill = rect.getAttribute('fill');
+                            return fill !== '#DDDDDD' && fill !== 'none';
+                        }).length;
+                    }''')
+                    
+                    if available_seats > 0:
+                        print(f"✅ 区域 {attempt + 1} 找到 {available_seats} 个可用座位，开始选择")
+                        # 选择第一个可用座位
+                        seat_selected = await iframe_frame.evaluate('''() => {
+                            const rects = document.querySelectorAll('#ez_canvas svg rect');
+                            const availableSeats = Array.from(rects).filter(rect => {
+                                const fill = rect.getAttribute('fill');
+                                return fill !== '#DDDDDD' && fill !== 'none';
+                            });
+                            if (availableSeats.length > 0) {
+                                availableSeats[0].dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+                                return true;
+                            }
+                            return false;
+                        }''')
+                        
+                        if seat_selected:
+                            print("✅ 成功选择座位")
+                            return True
+                    
+                    print(f"⚠️ 区域 {attempt + 1} 无可用座位，继续尝试下一个区域")
+                    
+                except:
+                    print(f"⚠️ 区域 {attempt + 1} 座位画布未加载，继续尝试下一个区域")
+                    continue
             
-            # 等待页面响应
+            print(f"❌ 已尝试所有 {total_zones} 个区域，均无可用座位")
+            return False
+            
+        except Exception as e:
+            print(f"❌ 选择座位区域和座位失败: {e}")
+            return False
+
+    async def proceed_to_payment(self, iframe_element):
+        """进入支付流程"""
+        try:
+            print("💳 开始进入支付流程...")
+            
+            if not iframe_element:
+                print("❌ iframe_element为空")
+                return False
+            
+            # 获取iframe的contentFrame
+            iframe_frame = await iframe_element.contentFrame()
+            if not iframe_frame:
+                print("❌ 无法获取iframe frame")
+                return False
+            
+            # 1. 点击下一步按钮
+            print("🔄 点击下一步...")
+            await iframe_frame.waitForSelector('#nextTicketSelection', {'timeout': 10000})
+            await iframe_frame.click('#nextTicketSelection')
+            await asyncio.sleep(2)
+            print("✅ 已点击下一步")
+            
+                        # 2. 点击下一步支付
+            print("🔄 点击下一步支付...")
+            await iframe_frame.waitForSelector('#nextPayment', {'timeout': 10000})
+            await iframe_frame.click('#nextPayment')
+            await asyncio.sleep(2)
+            print("✅ 已点击下一步支付")
+            
+            # 3. 输入手机号
+            print("📱 输入手机号...")
+            phone = Config.PHONE  # "010-5693-9081"
+            phone_parts = phone.split('-')
+            
+            if len(phone_parts) == 3:
+                await iframe_frame.waitForSelector('#tel1', {'timeout': 10000})
+                await iframe_frame.type('#tel1', phone_parts[0])  # 010
+                await iframe_frame.type('#tel2', phone_parts[1])  # 5693
+                await iframe_frame.type('#tel3', phone_parts[2])  # 9081
+                print(f"✅ 已输入手机号: {phone}")
+            else:
+                print("❌ 手机号格式错误")
+                return False
+            
+
             await asyncio.sleep(1)
+            # 5. 选择支付方式
+            print("🔄 选择支付方式...")
+            await iframe_frame.waitForSelector('#payMethodCode003', {'timeout': 10000})
+            await iframe_frame.click('#payMethodCode003')
+            await asyncio.sleep(1)
+            print("✅ 已选择支付方式")
             
+            await iframe_frame.waitForSelector('#cashReceiptIssueCode3', {'timeout': 10000})
+            await iframe_frame.click('#cashReceiptIssueCode3')
+            await asyncio.sleep(1)
+            print("✅ 已选择现金收据选项")
+            
+            # 6. 选择银行（신한은행 - value: 88）
+            print("🔄 选择银行...")
+            await iframe_frame.waitForSelector('select[name="bankCode"]', {'timeout': 10000})
+            await iframe_frame.evaluate('''() => {
+                const select = document.querySelector('select[name="bankCode"]');
+                if (select) {
+                    select.value = '88';
+                    select.dispatchEvent(new Event('change', { bubbles: true }));
+                }
+            }''')
+            await asyncio.sleep(1)
+            print("✅ 已选择银行：신한은행")
+
+            # 4. 点击同意所有条款
+            print("🔄 同意所有条款...")
+            await iframe_frame.waitForSelector('#chkAgreeAll', {'timeout': 10000})
+            await iframe_frame.click('#chkAgreeAll')
+            await asyncio.sleep(1)
+            print("✅ 已同意所有条款")
+            # 7. 点击最终支付按钮
+            print("🔄 点击最终支付...")
+            await iframe_frame.waitForSelector('#btnFinalPayment', {'timeout': 10000})
+            await iframe_frame.click('#btnFinalPayment')
+            await asyncio.sleep(1)
+            print("✅ 已点击最终支付")
+            
+            print("🎉 支付流程完成！")
             return True
             
         except Exception as e:
-            print(f"❌ 选择座位区域失败: {e}")
+            print(f"❌ 支付流程失败: {e}")
             return False
-    
-
     
     async def close(self):
         """关闭浏览器"""
@@ -414,12 +542,19 @@ async def main():
                         if iframe_element:
                             print("🎉 已获取iframe，可以继续操作")
                             
-                            # 选择座位区域
-                            zone_success = await login_manager.select_seat_zone(iframe_element)
-                            if zone_success:
-                                print("🎉 座位区域选择完成！")
+                            # 选择座位区域和座位
+                            success = await login_manager.select_zone_and_seat(iframe_element)
+                            if success:
+                                print("🎉 座位选择完成！")
+                                
+                                # 进入支付流程
+                                payment_success = await login_manager.proceed_to_payment(iframe_element)
+                                if payment_success:
+                                    print("🎉 支付流程设置完成！")
+                                else:
+                                    print("💔 支付流程失败")
                             else:
-                                print("💔 座位区域选择失败")
+                                print("💔 座位选择失败")
                         else:
                             print("💔 获取iframe失败")
                     else:

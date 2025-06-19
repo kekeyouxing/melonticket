@@ -8,12 +8,13 @@ class Config:
     """配置类，用于管理所有配置信息"""
     
     # Melon网站相关
-    MELON_BASE_URL = "https://ticket.melon.com/performance/index.htm?prodId=211506"
+    MELON_BASE_URL = "https://ticket.melon.com/performance/index.htm?prodId=211358"
     MELON_LOGIN_URL = "https://member.melon.com/muid/web/login/login_informM.htm"
     
     # 用户凭据
     USERNAME = os.getenv('MELON_USERNAME', '')
     PASSWORD = os.getenv('MELON_PASSWORD', '')
+    PHONE = os.getenv('MELON_PHONE', '')
     
     # 浏览器设置
     HEADLESS_MODE = os.getenv('HEADLESS_MODE', 'False').lower() == 'true'
@@ -32,4 +33,6 @@ class Config:
         """验证配置是否有效"""
         if not cls.USERNAME or not cls.PASSWORD:
             raise ValueError("请在环境变量中设置MELON_USERNAME和MELON_PASSWORD")
+        if not cls.PHONE:
+            raise ValueError("请在环境变量中设置MELON_PHONE")
         return True 
