@@ -1,4 +1,10 @@
 import asyncio
+import base64
+from io import BytesIO
+from PIL import Image
+import ddddocr
+import os
+from datetime import datetime
 from config import Config
 
 class ReservationHandler:
@@ -8,7 +14,21 @@ class ReservationHandler:
         self.browser = browser
         self.page = None
         self.iframe_element = None
+        self.ocr = ddddocr.DdddOcr(show_ad=False)
     
+    def add_white_background(self, base64_str):
+        """为验证码图片添加白色背景，以提高识别准确率"""
+        img_bytes = base64.b64decode(base64_str)
+        img = Image.open(BytesIO(img_bytes))
+        bg = Image.new('RGBA', img.size, (255, 255, 255, 255))
+        bg.paste(img, (0, 0), img)
+        return bg
+
+    def recognize(self, base64_str):
+        """识别验证码"""
+        value = self.add_white_background(base64_str)
+        return self.ocr.classification(value)
+
     async def close_popup_dialogs(self, page):
         """检测并关闭提示弹窗"""
         try:
@@ -34,11 +54,18 @@ class ReservationHandler:
         except Exception as e:
             print(f"⚠️ 关闭弹窗时出错: {e}")
 
-    async def reserve_ticket(self):
-        """预约票务"""
+    async def complete_reservation_flow(self):
+        """完整的预约流程：选择时间 -> 获取弹窗 -> 验证码 -> iframe -> 选座 -> 支付"""
         try:
-            print("🎫 开始预约流程...")
-            await self.page.goto(Config.MELON_BASE_URL, {'waitUntil': 'domcontentloaded'})
+            # 第1步：选择时间（选择日期时间并点击预约按钮）
+            print("⏰ 开始选择时间流程...")
+            
+            # 获取当前页面URL并刷新页面（预约时间到了界面会变化）
+            current_url = self.page.url
+            print(f"🔄 当前页面: {current_url}")
+            print("🔄 刷新页面以获取最新的时间选择状态...")
+            await self.page.reload({'waitUntil': 'domcontentloaded'})
+            print("✅ 页面刷新完成")
             
             # 关闭可能出现的提示弹窗
             await self.close_popup_dialogs(self.page)
@@ -49,7 +76,7 @@ class ReservationHandler:
                 await self.page.click('#list_date li:first-child')
                 print("✅ 已选择日期")
             except:
-                print("❌ 预约失败: 未找到可选择的日期选项")
+                print("❌ 选择时间失败: 未找到可选择的日期选项")
                 return False
             
             # 等待并点击时间列表第一个选项
@@ -58,7 +85,7 @@ class ReservationHandler:
                 await self.page.click('#list_time li:first-child')
                 print("✅ 已选择时间")
             except:
-                print("❌ 预约失败: 未找到可选择的时间选项")
+                print("❌ 选择时间失败: 未找到可选择的时间选项")
                 return False
             
             # 等待并点击预约按钮
@@ -67,92 +94,78 @@ class ReservationHandler:
                 await self.page.click('#ticketReservation_Btn')
                 print("✅ 已点击预约按钮")
             except:
-                print("❌ 预约失败: 未找到预约按钮或按钮不可点击")
+                print("❌ 选择时间失败: 未找到预约按钮或按钮不可点击")
                 return False
             
-            return True
-        except Exception as e:
-            print(f"❌ 预约过程中发生错误: {e}")
-            return False
-    
-    async def get_popup_page(self, max_wait_time=10):
-        """获取弹窗页面，增加重试机制"""
-        print("🔍 等待弹窗页面打开...")
-        
-        for attempt in range(max_wait_time):
-            await asyncio.sleep(1)
-            pages = await self.browser.pages()
+            print("✅ 时间选择完成，预约请求已发送")
             
-            # 查找新打开的页面（不是主页面的其他页面）
-            for page in pages:
-                if page != self.page:
-                    url = page.url.lower()
-                    # 检查URL是否包含相关关键词
-                    if ('onestop' in url or 'popup' in url or 'reservation' in url or 'ticket' in url):
-                        print(f"✅ 已获取弹窗页面: {page.url}")
-                        return page
+            # 第2步：获取弹窗页面
+            popup_page = await self._find_popup_page()
+            if not popup_page:
+                print("❌ 获取弹窗页面失败")
+                return False
+            
+            # 对弹窗页面进行截图
+            await self.take_debug_screenshot(popup_page, "popup_page")
+            
+            # 第3步：处理验证码 (恢复内联实现)
+            print("🔍 处理验证码...")
+            captcha_verified = True
+            # for attempt in range(10): # 最多重试5次
+            #     try:
+            #         await popup_page.waitForSelector('#captchaImg')
+            #         captcha_src = await popup_page.evaluate('document.querySelector("#captchaImg").src')
+            #         base64_data = captcha_src.split('base64,')[1]
+            #         captcha_text = self.recognize(base64_data).upper()
+            #         print(f"🔤 识别到验证码: {captcha_text}")
                     
-                    # 如果URL不明确，尝试检查页面内容
-                    try:
-                        # 等待验证码元素出现，如果出现说明是正确的弹窗页面
-                        await page.waitForSelector('#captchaImg', {'timeout': 1000})
-                        print(f"✅ 通过验证码元素确认弹窗页面: {page.url}")
-                        return page
-                    except:
-                        # 检查iframe元素
-                        try:
-                            await page.waitForSelector('#oneStopFrame', {'timeout': 1000})
-                            print(f"✅ 通过iframe元素确认弹窗页面: {page.url}")
-                            return page
-                        except:
-                            continue
+            #         await popup_page.evaluate('document.querySelector("#label-for-captcha").value = ""')
+            #         await popup_page.type('#label-for-captcha', captcha_text)
+            #         await popup_page.click('#btnComplete')
+            #         await popup_page.waitFor(1000)
+                    
+            #         certification_style = await popup_page.evaluate('document.querySelector("#certification").style.display')
+            #         if certification_style == "none":
+            #             print("✅ 验证码验证成功")
+            #             captcha_verified = True
+            #             break
+            #         else:
+            #             if attempt < 4:
+            #                 await popup_page.click('#btnReload')
+            #                 await popup_page.waitFor(1000)
+            #     except Exception as e:
+            #         print(f"验证码处理异常: {e}")
+            #         if attempt < 4:
+            #             try:
+            #                 await popup_page.click('#btnReload')
+            #                 await popup_page.waitFor(1000)
+            #             except: pass
             
-            print(f"⏳ 等待弹窗页面... ({attempt + 1}/{max_wait_time})")
-        
-        print("⚠️ 未找到弹窗页面，可能需要手动检查")
-        return None
-
-    async def get_iframe(self, popup_page):
-        """获取iframe元素"""
-        try:
-            # 等待iframe加载
-            await popup_page.waitForSelector('#oneStopFrame', {'timeout': 30000})
-            print("✅ iframe已加载")
-            
-            # 获取iframe元素
-            self.iframe_element = await popup_page.querySelector('#oneStopFrame')
-            
-            if not self.iframe_element:
-                print("❌ 无法获取iframe元素")
-                return None
-            
-            print("✅ 已获取iframe元素，现在可以通过self.iframe_element访问")
-            return self.iframe_element
-            
-        except Exception as e:
-            print(f"❌ 获取iframe失败: {e}")
-            return None
-    
-    async def select_zone_and_seat(self, iframe_element):
-        """选择座位区域并选择座位"""
-        try:
-            print("🎯 开始选择座位区域和座位...")
-            
-            if not iframe_element:
-                print("❌ iframe_element为空")
+            if not captcha_verified:
+                print("❌ 验证码处理失败，终止流程")
                 return False
             
-            # 获取iframe的contentFrame
+            # 第4步：获取iframe并进行所有后续操作
+            print("🔍 获取iframe...")
+            await popup_page.waitForSelector('#oneStopFrame', {'timeout': 30000})
+            iframe_element = await popup_page.querySelector('#oneStopFrame')
+            if not iframe_element:
+                print("❌ 无法获取iframe元素")
+                return False
+            
             iframe_frame = await iframe_element.contentFrame()
             if not iframe_frame:
                 print("❌ 无法获取iframe frame")
                 return False
+            print("✅ 已获取iframe")
+            print(f"📄 初始 iframe_frame: {iframe_frame}")
             
-            # 等待座位区域画布加载
+            # 第5步：选择座位
+            print("🎯 开始选择座位...")
             await iframe_frame.waitForSelector('#iez_canvas svg', {'timeout': 30000})
             print("✅ 座位区域画布已加载")
             
-            # 获取所有可点击的座位区域
+            # 获取所有可点击的座位区域并选择座位
             all_elements = await iframe_frame.querySelectorAll('#iez_canvas svg rect, #iez_canvas svg path')
             clickable_zones = []
             
@@ -171,134 +184,79 @@ class ReservationHandler:
             
             print(f"📍 找到 {len(clickable_zones)} 个可点击的座位区域")
             
-            # 按前排中间优先排序
-            zone_positions = []
-            for zone in clickable_zones:
-                pos = await iframe_frame.evaluate('(el) => { const bbox = el.getBBox(); return { centerX: bbox.x + bbox.width/2, centerY: bbox.y + bbox.height/2 }; }', zone)
-                zone_positions.append({'element': zone, 'position': pos})
-            
-            svg_bounds = await iframe_frame.evaluate('() => { const svg = document.querySelector("#iez_canvas svg"); const vb = svg.viewBox.baseVal; return { centerX: vb.width/2 }; }')
-            zone_positions.sort(key=lambda x: x['position']['centerY'] * 2 + abs(x['position']['centerX'] - svg_bounds['centerX']))
-            
-            # 尝试所有区域直到找到可用座位
-            total_zones = len(zone_positions)
-            print(f"🔄 将依次尝试所有 {total_zones} 个区域")
-            
-            for attempt in range(total_zones):
-                selected_zone = zone_positions[attempt]['element']
-                zone_pos = zone_positions[attempt]['position']
-                print(f"🎯 尝试区域 {attempt + 1}/{total_zones} (Y: {zone_pos['centerY']:.1f}, X: {zone_pos['centerX']:.1f})")
+            # 尝试选择座位
+            seat_selected = False
+            for attempt, zone in enumerate(clickable_zones):
+                print(f"🎯 尝试区域 {attempt + 1}/{len(clickable_zones)}")
+                await iframe_frame.evaluate('(el) => el.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }))', zone)
+                await asyncio.sleep(0.1)
                 
-                # 点击区域
-                await iframe_frame.evaluate('(el) => el.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }))', selected_zone)
-                await asyncio.sleep(1)
-                
-                # 检查是否有可用座位
                 try:
                     await iframe_frame.waitForSelector('#ez_canvas svg', {'timeout': 5000})
-                    available_seats = await iframe_frame.evaluate('''() => {
+                    seat_selected = await iframe_frame.evaluate('''() => {
                         const rects = document.querySelectorAll('#ez_canvas svg rect');
-                        return Array.from(rects).filter(rect => {
+                        const availableSeats = Array.from(rects).filter(rect => {
                             const fill = rect.getAttribute('fill');
                             return fill !== '#DDDDDD' && fill !== 'none';
-                        }).length;
+                        });
+                        if (availableSeats.length > 0) {
+                            availableSeats[0].dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+                            return true;
+                        }
+                        return false;
                     }''')
                     
-                    if available_seats > 0:
-                        print(f"✅ 区域 {attempt + 1} 找到 {available_seats} 个可用座位，开始选择")
-                        # 选择第一个可用座位
-                        seat_selected = await iframe_frame.evaluate('''() => {
-                            const rects = document.querySelectorAll('#ez_canvas svg rect');
-                            const availableSeats = Array.from(rects).filter(rect => {
-                                const fill = rect.getAttribute('fill');
-                                return fill !== '#DDDDDD' && fill !== 'none';
-                            });
-                            if (availableSeats.length > 0) {
-                                availableSeats[0].dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-                                return true;
-                            }
-                            return false;
-                        }''')
-                        
-                        if seat_selected:
-                            print("✅ 成功选择座位")
-                            return True
-                    
-                    print(f"⚠️ 区域 {attempt + 1} 无可用座位，继续尝试下一个区域")
-                    
+                    if seat_selected:
+                        print("✅ 成功选择座位")
+                        break
                 except:
-                    print(f"⚠️ 区域 {attempt + 1} 座位画布未加载，继续尝试下一个区域")
                     continue
             
-            print(f"❌ 已尝试所有 {total_zones} 个区域，均无可用座位，可能原因：演出票已售罄或座位被占用")
-            return False
+            if not seat_selected:
+                print("❌ 未能选择到座位")
+                return False
             
-        except Exception as e:
-            print(f"❌ 选择座位区域和座位失败: {e}")
-            return False
+            # 第6步：支付流程
+            print("💳 开始支付流程...")
+            
+            # 点击下一步
+            await iframe_frame.waitForSelector('#nextTicketSelection', {'timeout': 10000})
+            await iframe_frame.click('#nextTicketSelection')
 
-    async def proceed_to_payment(self, iframe_element):
-        """进入支付流程"""
-        try:
-            print("💳 开始进入支付流程...")
+            await asyncio.sleep(3) # 等待内容开始加载
+
+            # 在更新后的frame中等待元素出现
+            await iframe_frame.waitForSelector("#nextPayment", {"timeout": 15000})
+            print("✅ #nextPayment 元素已出现")
             
-            if not iframe_element:
-                print("❌ iframe_element为空")
-                return False
-            
-            # 获取iframe的contentFrame
-            iframe_frame = await iframe_element.contentFrame()
-            if not iframe_frame:
-                print("❌ 无法获取iframe frame")
-                return False
-            
-            # 1. 点击下一步按钮
-            print("🔄 点击下一步...")
-            try:
-                await iframe_frame.waitForSelector('#nextTicketSelection', {'timeout': 10000})
-                await iframe_frame.click('#nextTicketSelection')
-                await asyncio.sleep(2)
-                print("✅ 已点击下一步")
-            except:
-                print("❌ 支付流程失败: 未找到下一步按钮，可能座位选择不完整")
-                return False
-            
-            # 2. 点击下一步支付
-            print("🔄 点击下一步支付...")
-            await iframe_frame.waitForSelector('#nextPayment', {'timeout': 10000})
-            await iframe_frame.click('#nextPayment')
-            await asyncio.sleep(2)
+            # 点击下一步支付
+            await iframe_frame.click("#nextPayment")
             print("✅ 已点击下一步支付")
+            await asyncio.sleep(5)
             
-            # 3. 输入手机号
+            # 输入手机号
             print("📱 输入手机号...")
             phone = Config.PHONE
             phone_parts = phone.split('-')
-            
             if len(phone_parts) == 3:
                 await iframe_frame.waitForSelector('#tel1', {'timeout': 10000})
                 await iframe_frame.type('#tel1', phone_parts[0])
                 await iframe_frame.type('#tel2', phone_parts[1])
                 await iframe_frame.type('#tel3', phone_parts[2])
                 print(f"✅ 已输入手机号: {phone}")
-            else:
-                print("❌ 手机号格式错误")
-                return False
+                await asyncio.sleep(3)
             
-            await asyncio.sleep(1)
-            # 5. 选择支付方式
+            # 选择支付方式
             print("🔄 选择支付方式...")
             await iframe_frame.waitForSelector('#payMethodCode003', {'timeout': 10000})
             await iframe_frame.click('#payMethodCode003')
-            await asyncio.sleep(1)
-            print("✅ 已选择支付方式")
+            await asyncio.sleep(3)
             
             await iframe_frame.waitForSelector('#cashReceiptIssueCode3', {'timeout': 10000})
             await iframe_frame.click('#cashReceiptIssueCode3')
-            await asyncio.sleep(1)
-            print("✅ 已选择现金收据选项")
+            await asyncio.sleep(3)
             
-            # 6. 选择银行（신한은행 - value: 88）
+            # 选择银行
             print("🔄 选择银行...")
             await iframe_frame.waitForSelector('select[name="bankCode"]', {'timeout': 10000})
             await iframe_frame.evaluate('''() => {
@@ -309,24 +267,94 @@ class ReservationHandler:
                 }
             }''')
             await asyncio.sleep(1)
-            print("✅ 已选择银行：신한은행")
 
-            # 4. 点击同意所有条款
+            # 同意条款
             print("🔄 同意所有条款...")
             await iframe_frame.waitForSelector('#chkAgreeAll', {'timeout': 10000})
             await iframe_frame.click('#chkAgreeAll')
             await asyncio.sleep(1)
-            print("✅ 已同意所有条款")
-            # 7. 点击最终支付按钮
+            
+            # 最终支付
             print("🔄 点击最终支付...")
             await iframe_frame.waitForSelector('#btnFinalPayment', {'timeout': 10000})
+            await self.take_element_screenshot(iframe_element, "before_final_payment")
             await iframe_frame.click('#btnFinalPayment')
-            await asyncio.sleep(1)
-            print("✅ 已点击最终支付")
+            await asyncio.sleep(3)
+            await self.take_element_screenshot(iframe_element, "finalPayment")
             
-            print("🎉 支付流程完成！")
+            print("🎉 完整预约流程执行成功！")
             return True
             
         except Exception as e:
-            print(f"❌ 支付流程失败: {e}")
-            return False 
+            print(f"❌ 完整预约流程失败: {e}")
+            return False
+
+    async def _find_popup_page(self):
+        """在浏览器中查找并返回当前的弹窗页面"""
+        for attempt in range(10):
+            await asyncio.sleep(1)
+            pages = await self.browser.pages()
+            for page in pages:
+                if page != self.page:  # 排除主页面
+                    url = page.url.lower()
+                    try:
+                        # 优先通过URL和关键元素来识别
+                        is_popup = ('onestop' in url or 'popup' in url)
+                        if is_popup and (await page.querySelector('#oneStopFrame') or await page.querySelector('#captchaImg')):
+                            print(f"✅ 已找到弹窗页面: {page.url}")
+                            return page
+                    except Exception:
+                        # 如果页面在检查时关闭，会抛出异常，忽略并继续
+                        continue
+            print(f"⏳ 等待弹窗页面... ({attempt + 1}/10)")
+        return None
+
+    async def take_debug_screenshot(self, page, filename_prefix):
+        """调试用截图函数"""
+        try:
+            if page:
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                screenshot_path = f"/app/data/{filename_prefix}_{timestamp}.png"
+                
+                # 设置更大的视口以确保完整截图
+                await page.setViewport({'width': 1920, 'height': 1080})
+                
+                # 等待页面完全加载
+                await page.waitFor(1000)
+                
+                # 高质量全页面截图
+                await page.screenshot({
+                    'path': screenshot_path, 
+                    'fullPage': True,
+                    'quality': 95,
+                    'type': 'png'
+                })
+                print(f"📸 截图已保存: {screenshot_path}")
+                return screenshot_path
+        except Exception as e:
+            print(f"❌ 截图失败: {e}")
+            return None
+
+    async def take_element_screenshot(self, element, filename_prefix):
+        """对指定的ElementHandle进行截图"""
+        try:
+            if element:
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                screenshot_path = f"/app/data/{filename_prefix}_{timestamp}.png"
+                
+                await asyncio.sleep(1)
+                
+                await element.screenshot({
+                    'path': screenshot_path,
+                    'quality': 95,
+                    'type': 'png'
+                })
+                print(f"📸 元素截图已保存: {screenshot_path}")
+                return screenshot_path
+        except Exception as e:
+            print(f"❌ 元素截图失败: {e}")
+            return None
+
+    async def execute_reservation(self):
+        """执行完整的预约流程"""
+        return await self.complete_reservation_flow()

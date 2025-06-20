@@ -1,64 +1,76 @@
-# 使用官方Python 3.11镜像作为基础镜像
+# 使用官方Python 3.11 slim镜像（兼容性更好）
 FROM python:3.11-slim
 
 # 设置工作目录
 WORKDIR /app
 
-# 配置apt源为清华镜像源，加速软件包下载
-RUN sed -i 's/deb.debian.org/mirrors.tuna.tsinghua.edu.cn/g' /etc/apt/sources.list.d/debian.sources
+# 设置时区、环境变量和字符编码
+ENV TZ=Asia/Shanghai \
+    PYTHONUNBUFFERED=1 \
+    DISPLAY=:99 \
+    HEADLESS_MODE=true \
+    CHROME_BIN=/usr/bin/chromium \
+    CHROME_PATH=/usr/bin/chromium \
+    LANG=ko_KR.UTF-8 \
+    LANGUAGE=ko_KR:ko \
+    LC_ALL=ko_KR.UTF-8 \
+    PYTHONIOENCODING=utf-8
 
-# 设置时区为北京时间
-ENV TZ=Asia/Shanghai
-RUN apt-get update && apt-get install -y tzdata \
-    && ln -snf /usr/share/zoneinfo/$TZ /etc/localtime \
-    && echo $TZ > /etc/timezone
-
-# 安装系统依赖
-RUN apt-get install -y \
-    wget \
-    gnupg \
-    ca-certificates \
-    fonts-liberation \
-    libasound2 \
-    libatk-bridge2.0-0 \
-    libatk1.0-0 \
-    libatspi2.0-0 \
-    libdrm2 \
-    libgtk-3-0 \
-    libnspr4 \
-    libnss3 \
-    libx11-xcb1 \
-    libxcomposite1 \
-    libxdamage1 \
-    libxrandr2 \
-    xvfb \
+# 一次性安装所有系统依赖并清理，减少镜像层数
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    # 时区支持
+    tzdata \
+    # 韩文语言包和字符编码支持
+    locales \
+    # 必需的浏览器依赖
     chromium \
     chromium-driver \
-    && rm -rf /var/lib/apt/lists/*
-
-# 创建非root用户
-RUN groupadd -r melonuser && useradd -r -g melonuser -G audio,video melonuser \
+    # 虚拟显示
+    xvfb \
+    # 完整的韩文字体支持
+    fonts-liberation \
+    fonts-noto-cjk \
+    fonts-noto-color-emoji \
+    fonts-nanum \
+    fonts-baekmuk \
+    fonts-unfonts-core \
+    # 额外的字体支持
+    fontconfig \
+    # 必需的系统依赖
+    ca-certificates \
+    && ln -snf /usr/share/zoneinfo/$TZ /etc/localtime \
+    && echo $TZ > /etc/timezone \
+    # 生成韩文locale
+    && echo "ko_KR.UTF-8 UTF-8" >> /etc/locale.gen \
+    && locale-gen ko_KR.UTF-8 \
+    # 更新字体缓存
+    && fc-cache -fv \
+    # 创建用户
+    && groupadd -r melonuser && useradd -r -g melonuser melonuser \
     && mkdir -p /home/melonuser/Downloads \
     && chown -R melonuser:melonuser /home/melonuser \
-    && chown -R melonuser:melonuser /app
+    # 清理apt缓存和临时文件
+    && apt-get autoremove -y \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* /usr/share/doc/* /usr/share/man/*
 
-# 配置pip使用清华源，加速Python包下载
+# 配置pip使用清华源
 RUN pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple/ \
     && pip config set global.trusted-host pypi.tuna.tsinghua.edu.cn
 
 # 复制requirements文件并安装Python依赖
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt \
+    && rm requirements.txt \
+    # 清理pip缓存
+    && pip cache purge \
+    # 删除不必要的文件
+    && find /usr/local -name "*.pyc" -delete \
+    && find /usr/local -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
 
-# 复制应用代码
-COPY . .
-
-# 设置环境变量
-ENV PYTHONUNBUFFERED=1
-ENV DISPLAY=:99
-ENV HEADLESS_MODE=true
-ENV CHROME_BIN=/usr/bin/chromium
-ENV CHROME_PATH=/usr/bin/chromium
+# 复制应用代码（只复制必要文件）
+COPY *.py ./
+COPY *.md ./
 
 # 更改所有权到melonuser
 RUN chown -R melonuser:melonuser /app
@@ -67,4 +79,4 @@ RUN chown -R melonuser:melonuser /app
 USER melonuser
 
 # 设置启动命令
-CMD ["sh", "-c", "Xvfb :99 -screen 0 1920x1080x24 & sleep 2 && python melon_service.py"] 
+CMD ["sh", "-c", "Xvfb :99 -screen 0 1920x1080x24 & sleep 2 && python melon_service.py"]
