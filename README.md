@@ -1,6 +1,6 @@
-# Melon 自动登录程序
+# 🍈 Melon票务定时预约系统
 
-一个基于Python + Selenium的Melon网站自动登录和会话管理工具。
+基于Docker的Melon票务自动预约系统，支持定时预约、无头运行。
 
 ## ⚠️ 重要声明
 
@@ -14,20 +14,20 @@
 ## 🎯 功能特性
 
 ### 核心功能
-- ✅ **智能登录检测**: 自动检测当前登录状态
-- 🔄 **会话复用**: 保存和恢复登录会话，避免重复登录
-- 🔐 **安全存储**: 使用文件保存cookies和会话数据
-- 🕒 **会话保持**: 自动保持会话活跃状态
-- 🎭 **人类行为模拟**: 随机延时，模拟真实用户操作
+- ⏰ **定时预约**: 设定预约时间，系统自动执行
+- 🔐 **智能登录**: 提前5分钟自动登录，确保预约时已准备就绪
+- 🎫 **全流程自动化**: 验证码识别、座位选择、支付配置全自动
+- 🤖 **无人值守**: 完全后台运行，无需人工干预
+- 💾 **会话保持**: 自动保存和恢复登录状态
 
 ### 技术特性
-- 🌐 **跨平台支持**: 支持 Windows、macOS、Linux
-- ⚙️ **自动驱动管理**: 自动下载和管理ChromeDriver
-- 🎛️ **灵活配置**: 支持环境变量和配置文件
-- 📊 **详细日志**: 提供详细的操作日志和状态信息
-- 🛡️ **错误处理**: 完善的异常处理和错误恢复
+- 🐳 **Docker容器化**: 完全容器化部署，环境隔离
+- 🖥️ **无头模式**: 后台运行，无需图形界面
+- 🎯 **精确定时**: 支持秒级精确的定时执行
+- 📊 **实时日志**: 详细的执行日志和状态监控
+- 🛡️ **错误恢复**: 完善的异常处理和重试机制
 
-## 📦 安装依赖
+## 🚀 快速开始
 
 ### 1. 克隆项目
 ```bash
@@ -35,95 +35,58 @@ git clone <repository-url>
 cd melonticket
 ```
 
-### 2. 安装Python依赖
+### 2. 配置环境变量
 ```bash
-pip install -r requirements.txt
+# 创建并编辑配置文件
+vim .env
 ```
 
-### 3. 安装Chrome浏览器
-确保系统已安装Google Chrome浏览器。程序会自动下载匹配的ChromeDriver。
-
-## 🔧 配置
-
-### 方式1: 环境变量
-```bash
-export MELON_USERNAME="your_username"
-export MELON_PASSWORD="your_password"
-export HEADLESS_MODE="False"  # 可选: 是否使用无头模式
-export WAIT_TIMEOUT="10"      # 可选: 等待超时时间(秒)
-```
-
-### 方式2: .env文件
-创建 `.env` 文件:
+配置内容示例：
 ```env
-MELON_USERNAME=your_username
-MELON_PASSWORD=your_password
-HEADLESS_MODE=False
-WAIT_TIMEOUT=10
-IMPLICIT_WAIT=5
-SESSION_FILE=session_data.json
-COOKIE_FILE=cookies.json
+# 账户信息
+MELON_USERNAME=你的用户名
+MELON_PASSWORD=你的密码
+MELON_PHONE=010-1234-5678
+
+# 定时设置（重要！）
+RESERVATION_START_TIME=2024-01-15 10:00:00
+LOGIN_ADVANCE_MINUTES=5
+
+# 系统设置
+HEADLESS_MODE=true
 ```
 
-## 🚀 使用方法
-
-### 基础使用
+### 3. 启动定时预约
 ```bash
-python main.py
-```
+# 一键启动（后台运行）
+./run-docker.sh
 
-### 编程使用
-```python
-from melon_automation import MelonAutomation
+# 前台运行（查看日志）
+./run-docker.sh --foreground
 
-# 使用上下文管理器
-with MelonAutomation() as automation:
-    if automation.login():
-        print("登录成功!")
-        # 保持会话30分钟
-        automation.keep_session_alive(30)
-```
-
-### 高级使用
-```python
-from melon_automation import MelonAutomation
-from session_manager import SessionManager
-
-automation = MelonAutomation()
-
-# 检查是否有有效会话
-if automation.session_manager.is_session_valid():
-    print("发现有效会话")
-    
-# 执行登录
-if automation.login():
-    print("登录成功")
-    
-    # 自定义会话数据
-    custom_data = {'user_id': '12345', 'preferences': {}}
-    automation.session_manager.save_session_data(custom_data)
-    
-    # 保持会话
-    automation.keep_session_alive(60)  # 60分钟
-
-# 清理资源
-automation.close()
+# 调试模式
+./run-docker.sh --debug
 ```
 
 ## 📁 项目结构
 
 ```
 melonticket/
-├── main.py                 # 主程序入口
-├── example.py              # 使用示例
-├── melon_automation.py     # 核心自动化类
-├── session_manager.py      # 会话管理器
-├── config.py               # 配置管理
-├── requirements.txt        # 依赖包列表
-├── README.md              # 项目说明
-├── .env.example           # 环境变量示例
-├── session_data.json      # 会话数据文件(运行时生成)
-└── cookies.json           # Cookie数据文件(运行时生成)
+├── 🐳 Docker配置
+│   ├── Dockerfile              # 镜像构建文件
+│   ├── .dockerignore           # 构建忽略
+│   └── run-docker.sh           # 一键部署脚本
+├── ⚙️ 配置文件
+│   ├── config.py               # 应用配置
+│   └── requirements.txt        # Python依赖
+├── 🎫 核心应用
+│   └── melon_login.py          # 主程序
+├── 📖 文档
+│   ├── README.md               # 主文档
+│   └── DOCKER_README.md        # Docker使用指南
+└── 💾 数据目录
+    ├── data/                   # 持久化数据
+    └── logs/                   # 日志文件
 ```
 
 ## ⚙️ 配置选项
@@ -132,61 +95,71 @@ melonticket/
 |--------|--------|------|
 | `MELON_USERNAME` | - | Melon用户名(必需) |
 | `MELON_PASSWORD` | - | Melon密码(必需) |
-| `HEADLESS_MODE` | `False` | 是否使用无头模式 |
-| `WAIT_TIMEOUT` | `10` | 元素等待超时时间(秒) |
-| `IMPLICIT_WAIT` | `5` | 隐式等待时间(秒) |
-| `SESSION_FILE` | `session_data.json` | 会话数据文件路径 |
-| `COOKIE_FILE` | `cookies.json` | Cookie文件路径 |
+| `MELON_PHONE` | - | 手机号码(必需) |
+| `RESERVATION_START_TIME` | - | 预约开始时间 |
+| `LOGIN_ADVANCE_MINUTES` | `5` | 提前登录分钟数 |
+| `HEADLESS_MODE` | `true` | 无头模式运行 |
 
 ## 🔍 工作原理
 
-### 登录流程
-1. **检查现有会话**: 首先检查是否有有效的保存会话
-2. **会话恢复**: 如果有效会话存在，加载cookies并验证
-3. **凭据登录**: 如果会话无效，使用用户名密码登录
-4. **保存会话**: 登录成功后保存cookies和会话数据
+### 定时执行流程
+1. **时间计算**: 根据预约时间计算提前登录时间
+2. **等待登录**: 到达登录时间前保持等待状态
+3. **提前登录**: 预约前5分钟自动开始登录
+4. **等待预约**: 登录成功后等待到预约时间
+5. **开始预约**: 精确到预约时间开始抢票
 
-### 会话管理
-- **自动保存**: 登录成功后自动保存会话信息
-- **过期检查**: 检查会话是否在24小时内有效
-- **定期更新**: 在保持会话期间定期更新cookies
-- **安全清理**: 提供清理会话数据的方法
+### 自动化流程
+- **验证码识别**: 自动识别并输入验证码
+- **智能选座**: 按前排中间优先选择座位
+- **支付配置**: 自动配置支付方式和银行信息
+- **会话保持**: 自动保存和恢复登录状态
 
-### 反检测措施
-- **用户代理**: 使用真实的浏览器用户代理
-- **随机延时**: 在操作间添加随机延时
-- **隐藏特征**: 隐藏webdriver检测特征
-- **人类行为**: 模拟真实的键盘输入模式
+### 容器特性
+- **虚拟显示**: 使用Xvfb提供虚拟图形环境
+- **无头运行**: 后台运行，无需物理显示器
+- **数据持久化**: 会话和日志数据持久化存储
+- **环境隔离**: 完全独立的运行环境
 
 ## 🐛 故障排除
 
 ### 常见问题
 
-**Q: 无法找到ChromeDriver**
-```
-A: 程序会自动下载ChromeDriver，确保网络连接正常
+**Q: 容器启动失败**
+```bash
+# 检查Docker状态
+docker ps
+
+# 查看容器日志
+docker logs melonticket-app
 ```
 
-**Q: 登录失败**
-```
-A: 检查用户名密码是否正确，是否需要验证码
-```
-
-**Q: 会话过期**
-```
-A: 会话有效期为24小时，过期后需要重新登录
+**Q: 预约时间设置错误**
+```bash
+# 时间格式必须为: YYYY-MM-DD HH:MM:SS
+RESERVATION_START_TIME=2024-01-15 10:00:00
 ```
 
-**Q: 元素查找失败**
+**Q: 验证码识别失败**
+```bash
+# 查看日志，验证码识别有重试机制
+docker logs -f melonticket-app
 ```
-A: 网站结构可能已更改，需要更新选择器
+
+**Q: 网络连接问题**
+```bash
+# 确保Docker容器网络正常
+docker exec melonticket-app ping baidu.com
 ```
 
 ### 调试模式
-设置环境变量启用详细日志:
+使用调试参数启动:
 ```bash
-export HEADLESS_MODE="False"  # 显示浏览器窗口
-export WAIT_TIMEOUT="30"      # 增加等待时间
+# 进入容器调试
+./run-docker.sh --debug
+
+# 前台运行查看日志
+./run-docker.sh --foreground
 ```
 
 ## 📄 许可证

@@ -6,3 +6,6 @@ Pillow>=9.0.0
 ddddocr>=1.4.11
 requests==2.31.0
 beautifulsoup4==4.12.2 
+
+# 定时调度
+schedule==1.2.0 
