@@ -1,82 +1,69 @@
-# 使用官方Python 3.11 slim镜像（兼容性更好）
+# 使用官方Python 3.11 slim镜像作为基础
 FROM python:3.11-slim
 
 # 设置工作目录
 WORKDIR /app
 
-# 设置时区、环境变量和字符编码
-ENV TZ=Asia/Shanghai \
-    PYTHONUNBUFFERED=1 \
-    DISPLAY=:99 \
-    HEADLESS_MODE=true \
-    CHROME_BIN=/usr/bin/chromium \
-    CHROME_PATH=/usr/bin/chromium \
-    LANG=ko_KR.UTF-8 \
+# 设置环境变量，确保韩文正确显示和处理
+ENV LANG=ko_KR.UTF-8 \
     LANGUAGE=ko_KR:ko \
     LC_ALL=ko_KR.UTF-8 \
+    TZ=Asia/Shanghai \
+    PYTHONUNBUFFERED=1 \
     PYTHONIOENCODING=utf-8
 
-# 一次性安装所有系统依赖并清理，减少镜像层数
+# 安装系统依赖
+# - ca-certificates: 用于HTTPS连接
+# - wget, unzip: 用于下载和解压chromedriver
+# - locales, fonts-noto-cjk, fonts-nanum: 韩文语言和字体支持
+# - gnupg: 用于处理Google Chrome的签名
+# - chromium-driver: ChromeDriver驱动程序
+# - 其他: Selenium和Chrome headless模式所需的共享库
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    # 时区支持
-    tzdata \
-    # 韩文语言包和字符编码支持
-    locales \
-    # 必需的浏览器依赖
-    chromium \
-    chromium-driver \
-    # 虚拟显示
-    xvfb \
-    # 完整的韩文字体支持
-    fonts-liberation \
-    fonts-noto-cjk \
-    fonts-noto-color-emoji \
-    fonts-nanum \
-    fonts-baekmuk \
-    fonts-unfonts-core \
-    # 额外的字体支持
-    fontconfig \
-    # 必需的系统依赖
     ca-certificates \
-    && ln -snf /usr/share/zoneinfo/$TZ /etc/localtime \
-    && echo $TZ > /etc/timezone \
-    # 生成韩文locale
+    wget \
+    unzip \
+    locales \
+    gnupg \
+    chromium-driver \
+    fonts-noto-cjk \
+    fonts-nanum \
+    libglib2.0-0 \
+    libnss3 \
+    libdbus-1-3 \
+    libatk1.0-0 \
+    libatk-bridge2.0-0 \
+    libcups2 \
+    libdrm2 \
+    libxkbcommon0 \
+    libxss1 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxfixes3 \
+    libxrandr2 \
+    libgbm1 \
+    libasound2 \
+    # 生成韩文locale并设置时区
     && echo "ko_KR.UTF-8 UTF-8" >> /etc/locale.gen \
     && locale-gen ko_KR.UTF-8 \
-    # 更新字体缓存
-    && fc-cache -fv \
-    # 创建用户
-    && groupadd -r melonuser && useradd -r -g melonuser melonuser \
-    && mkdir -p /home/melonuser/Downloads \
-    && chown -R melonuser:melonuser /home/melonuser \
-    # 清理apt缓存和临时文件
-    && apt-get autoremove -y \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* /usr/share/doc/* /usr/share/man/*
+    && ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone \
+    && rm -rf /var/lib/apt/lists/*
 
-# 配置pip使用清华源
-RUN pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple/ \
-    && pip config set global.trusted-host pypi.tuna.tsinghua.edu.cn
+# 安装Google Chrome (直接下载.deb包，避免访问被墙的Google服务器)
+RUN wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb \
+    && apt-get update \
+    && apt-get install -y ./google-chrome-stable_current_amd64.deb \
+    && rm google-chrome-stable_current_amd64.deb \
+    && rm -rf /var/lib/apt/lists/*
 
-# 复制requirements文件并安装Python依赖
+# 复制依赖文件并配置镜像源进行安装
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt \
-    && rm requirements.txt \
-    # 清理pip缓存
-    && pip cache purge \
-    # 删除不必要的文件
-    && find /usr/local -name "*.pyc" -delete \
-    && find /usr/local -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
+RUN pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple && \
+    pip config set global.trusted-host pypi.tuna.tsinghua.edu.cn && \
+    pip install --no-cache-dir -r requirements.txt
 
-# 复制应用代码（只复制必要文件）
-COPY *.py ./
-COPY *.md ./
+# 复制项目代码到容器中
+COPY . .
 
-# 更改所有权到melonuser
-RUN chown -R melonuser:melonuser /app
-
-# 切换到非root用户
-USER melonuser
-
-# 设置启动命令
-CMD ["sh", "-c", "Xvfb :99 -screen 0 1920x1080x24 & sleep 2 && python melon_service.py"]
+# 运行应用程序
+CMD ["python", "melon_service.py"]

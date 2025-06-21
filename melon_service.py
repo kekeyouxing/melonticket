@@ -1,12 +1,15 @@
 import asyncio
 import os
 import time
-from datetime import datetime
-import ddddocr
-from pyppeteer import launch
+from datetime import datetime, timedelta
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service as ChromeService
+from selenium.webdriver.chrome.options import Options as ChromeOptions
 from config import Config
 from login_handler import LoginHandler
 from reservation_handler import ReservationHandler
+import schedule
+import random
 
 class MelonTicketService:
     """Melon票务定时服务"""
@@ -14,7 +17,6 @@ class MelonTicketService:
     def __init__(self):
         self.browser = None
         self.page = None
-        self.ocr = ddddocr.DdddOcr(show_ad=False)
         self.iframe_element = None
         self.is_logged_in = False
         self.service_running = True
@@ -109,10 +111,10 @@ class MelonTicketService:
         """清理资源并停止服务"""
         self.service_running = False
         
+        if self.browser:
+            self.browser.quit()
         if self._event_loop and not self._event_loop.is_closed():
             try:
-                if self.browser:
-                    self._event_loop.run_until_complete(self.browser.close())
                 self._event_loop.close()
             except:
                 pass
@@ -122,15 +124,13 @@ class MelonTicketService:
         """登录并保持在主页面等待"""
         try:
             # 初始化浏览器
-            await self.init_browser()
-            self.page = await self.browser.newPage()
-            await self.page.setViewport({'width': 1920, 'height': 1080})
+            self.browser = await self.init_browser()
             
             # 执行登录
             success = await self.login()
             if success:
                 # 登录成功后导航到主页面并保持
-                await self.page.goto(Config.MELON_BASE_URL)
+                self.browser.get(Config.MELON_BASE_URL)
                 print(f"✅ 已导航到主页面: {Config.MELON_BASE_URL}")
                 return True
             return False
@@ -141,8 +141,8 @@ class MelonTicketService:
     async def refresh_and_reserve(self):
         """开始预约"""
         try:
-            if not self.page:
-                print("❌ 页面对象不可用")
+            if not self.browser:
+                print("❌ 浏览器对象不可用")
                 return False
             
             # 直接开始预约流程（刷新逻辑已在ReservationHandler中处理）
@@ -158,7 +158,7 @@ class MelonTicketService:
             Config.validate()
             
             # 验证浏览器和页面是否已初始化
-            if not self.browser or not self.page:
+            if not self.browser:
                 print("❌ 浏览器未初始化")
                 return False
             
@@ -167,7 +167,6 @@ class MelonTicketService:
             
             # 使用LoginHandler执行登录
             login_handler = LoginHandler(self.browser)
-            login_handler.page = self.page  # 设置页面对象
             success = await login_handler.login()
             
             if success:
@@ -185,47 +184,98 @@ class MelonTicketService:
     async def start_reservation(self):
         """开始预约流程"""
         try:
-            print("🎫 开始预约流程...")
-            # 使用ReservationHandler执行完整预约流程
             reservation_handler = ReservationHandler(self.browser)
-            reservation_handler.page = self.page  # 设置页面对象
-            success = await reservation_handler.execute_reservation()
-            
-            if success:
-                print("✅ 预约流程完成")
-                return True
-            else:
-                print("❌ 预约流程失败")
-                return False
+            print("🎫 开始预约流程...")
+            try:
+                mono_start_time = time.monotonic()
+                start_dt = datetime.now()
+                print(f"🚀 预约开始时间: {start_dt.strftime('%Y-%m-%d %H:%M:%S.%f')}")
+
+                success = await reservation_handler.execute_reservation()
+
+                mono_end_time = time.monotonic()
+                end_dt = datetime.now()
+                print(f"🏁 预约结束时间: {end_dt.strftime('%Y-%m-%d %H:%M:%S.%f')}")
                 
+                duration = mono_end_time - mono_start_time
+                print(f"⏱️ 预约任务总耗时: {duration:.2f} 秒")
+
+                if success:
+                    print("✅ 预约流程成功")
+                else:
+                    print("❌ 预约流程失败")
+                return success
+            except Exception as e:
+                print(f"❌ 预约流程执行失败: {e}")
+            return False
+            
         except Exception as e:
             print(f"❌ 预约流程执行失败: {e}")
             return False
-    
+
     async def init_browser(self):
         """初始化浏览器（Docker环境）"""
-        browser_args = [
-            '--no-sandbox', 
-            '--disable-setuid-sandbox',
-            '--disable-dev-shm-usage',
-            '--disable-gpu',
-            '--disable-web-security',
-            '--disable-features=VizDisplayCompositor',
-            '--disable-background-timer-throttling',
-            '--disable-backgrounding-occluded-windows',
-            '--disable-renderer-backgrounding',
-            '--window-size=1920,1080'
-        ]
+        print("🚀 初始化Selenium WebDriver...")
+        options = ChromeOptions()
         
-        executable_path = os.environ.get('CHROME_BIN', '/usr/bin/chromium')
-        
-        self.browser = await launch(
-            headless=False,  # 调试期间关闭无头模式以支持截图
-            executablePath=executable_path,
-            args=browser_args,
-            defaultViewport=None
-        )
+        # 从您的示例代码中借鉴，无头模式在Docker中是必需的
+        options.add_argument('--headless')
+        options.add_argument('--no-sandbox')
+        options.add_argument('--disable-dev-shm-usage')
+        options.add_argument('--disable-gpu')
+        options.add_argument('--window-size=1920,1080')
+        options.add_argument(f"user-agent={Config.USER_AGENT}")
 
+        try:
+            # 明确指定chromedriver路径，禁用自动版本管理
+            service = ChromeService(executable_path='/usr/bin/chromedriver')
+            driver = webdriver.Chrome(service=service, options=options)
+            print("✅ Selenium WebDriver 初始化成功")
+            return driver
+        except Exception as e:
+            print(f"❌ Selenium WebDriver 初始化失败: {e}")
+            print("🤔 请确保chromedriver已安装并且路径正确。")
+        return None
+    
+    async def run_immediately(self):
+        """立即执行登录和预约流程，用于测试"""
+        print("⚡️ 立即执行模式启动...")
+        try:
+            # 1. 初始化浏览器
+            self.browser = await self.init_browser()
+            if not self.browser:
+                print("❌ 浏览器初始化失败，测试终止。")
+                return
+
+            # 2. 执行登录
+            login_handler = LoginHandler(self.browser)
+            login_success = await login_handler.login()
+            if not login_success:
+                print("❌ 登录失败，测试终止。")
+                return
+
+            print("✅ 登录成功，立即开始预约流程...")
+            
+            # 3. 导航到目标页面
+            self.browser.get(Config.MELON_BASE_URL)
+            print(f"✅ 已导航到主页面: {Config.MELON_BASE_URL}")
+            
+            # 4. 执行预约
+            reservation_handler = ReservationHandler(self.browser)
+            reservation_success = await reservation_handler.execute_reservation()
+
+            if reservation_success:
+                print("🎉 立即执行模式：预约成功！")
+            else:
+                print("❌ 立即执行模式：预约失败。")
+                
+        except Exception as e:
+            print(f"❌ 立即执行模式出错: {e}")
+        finally:
+            print("🛑 立即执行模式结束，正在清理资源...")
+            if self.browser:
+                self.browser.quit()
+                
 def main():
     """主函数"""
     service = MelonTicketService()
@@ -234,22 +284,11 @@ def main():
         # 验证配置
         Config.validate()
         
-        print("🚀 定时服务启动中...")
-        print(f"⏰ 随机登录时间: {service.login_time.strftime('%Y-%m-%d %H:%M:%S')}")
-        print(f"🎫 预约时间: {Config.RESERVATION_START_TIME}")
-        
-        # 运行定时服务
-        service.run_scheduler()
-        
-        print("🐳 Docker容器运行完成，自动关闭...")
-            
-    except KeyboardInterrupt:
-        print("\n⏹️ 用户中断操作")
-        service._cleanup_and_stop()
+        # 立即执行测试流程
+        asyncio.run(service.run_immediately())
+
     except Exception as e:
-        print(f"❌ 发生未知错误: {e}")
-    finally:
-        print("👋 服务已关闭")
+        print(f"❌ 服务启动失败: {e}")
 
 if __name__ == "__main__":
     main() 
