@@ -11,5 +11,4 @@ certifi
 idna
 
 # 定时调度
-schedule==1.2.0
-webdriver-manager 
+schedule==1.2.0 

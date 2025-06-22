@@ -217,14 +217,16 @@ class MelonTicketService:
         """初始化浏览器（Docker环境）"""
         print("🚀 初始化Selenium WebDriver...")
         options = ChromeOptions()
+        options.add_argument("--disable-gpu")
+        options.add_argument("--no-sandbox")
+        options.add_argument("window-size=1920,1080")
+        options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/98.0.4758.102 Safari/537.36")
+        options.add_argument("--lang=ko_KR")
+        options.page_load_strategy = 'none'
         
         # 从您的示例代码中借鉴，无头模式在Docker中是必需的
         options.add_argument('--headless')
-        options.add_argument('--no-sandbox')
         options.add_argument('--disable-dev-shm-usage')
-        options.add_argument('--disable-gpu')
-        options.add_argument('--window-size=1920,1080')
-        options.add_argument(f"user-agent={Config.USER_AGENT}")
 
         try:
             # 明确指定chromedriver路径，禁用自动版本管理
@@ -255,11 +257,6 @@ class MelonTicketService:
                 return
 
             print("✅ 登录成功，立即开始预约流程...")
-            
-            # 3. 导航到目标页面
-            self.browser.get(Config.MELON_BASE_URL)
-            print(f"✅ 已导航到主页面: {Config.MELON_BASE_URL}")
-            
             # 4. 执行预约
             reservation_handler = ReservationHandler(self.browser)
             reservation_success = await reservation_handler.execute_reservation()
