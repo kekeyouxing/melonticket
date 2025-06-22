@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import os
+import time
 from datetime import datetime
 from io import BytesIO
 from PIL import Image
@@ -25,7 +26,8 @@ class ReservationHandler:
         try:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             filename = f"{filename_prefix}_{timestamp}.png"
-            filepath = os.path.join("data", filename)
+            # 使用绝对路径确保截图保存在挂载的数据卷中
+            filepath = f"/app/data/{filename}"
             self.driver.save_screenshot(filepath)
             print(f"📸 调试截图已保存: {filepath}")
         except Exception as e:
@@ -170,215 +172,188 @@ class ReservationHandler:
                 pass
 
     async def execute_reservation(self):
-        """执行完整的预约流程"""
+        """执行完整的预约流程，将所有逻辑放在一个方法内。"""
         try:
+            # 1. 导航并进行初始点击
             print(f"⏰ 开始运行预约流程... 当前时间: {datetime.now()}")
             self.driver.get(Config.MELON_BASE_URL)
-            print("✅ 已导航到主页面")
             self._close_notice_popup_if_present()
             wait = WebDriverWait(self.driver, 20)
-            # 使用JS点击，可以绕过弹窗遮挡
-            # 等待元素存在即可，无需等待其可点击
-            # 选择日期
-            date_button = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, '#list_date li button')))
-            date_button.click()
-            self._check_and_close_alert()
+            
+            # 选择日期和时间
+            wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, '#list_date li button'))).click()
             print("✅ 日期点击完成")
-            # 选择时间
-            time_button = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, '#list_time li button')))
-            time_button.click()
+            wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, '#list_time li button'))).click()
             print("✅ 时间点击完成")
-
-            reservation_button = wait.until(EC.presence_of_element_located((By.ID, 'ticketReservation_Btn')))
-            reservation_button.click()
+            wait.until(EC.presence_of_element_located((By.ID, 'ticketReservation_Btn'))).click()
             print("✅ 已点击预约按钮")
 
+            # 2. 切换到新窗口并处理验证码
             print("🔍 等待新窗口出现...")
             original_window = self.driver.current_window_handle
-            
-            # 等待新的窗口出现
             WebDriverWait(self.driver, 20).until(lambda d: len(d.window_handles) > 1)
-            
-            # 切换到新窗口
             new_window = [window for window in self.driver.window_handles if window != original_window][0]
             self.driver.switch_to.window(new_window)
             
-            # 等待关键元素加载，超时时间为10秒
             WebDriverWait(self.driver, 20).until(EC.presence_of_element_located((By.ID, 'captchaEncStr')))
             print("✅ 弹窗已就绪")
-            
-            self._take_debug_screenshot("popup_page")
 
             if not await self._handle_captcha():
+                print("❌ 验证码处理失败，流程终止。")
                 return False
             
-            print("🎯 开始选择座位...")
-            wait = WebDriverWait(self.driver, 30)
+            # 3. 进入Iframe并处理座位选择和支付
+            print("🎯 开始处理iframe工作流...")
+            iframe_wait = WebDriverWait(self.driver, 30)
+            try:
+                # 切换到iframe
+                iframe = iframe_wait.until(EC.presence_of_element_located((By.ID, 'oneStopFrame')))
+                self.driver.switch_to.frame(iframe)
+                print("✅ 已切换到iframe")
+                
+                # 等待座位区域画布加载
+                iframe_wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, '#iez_canvas svg')))
+                print("✅ 座位区域画布已加载")
 
-            # 切换到iframe
-            iframe = wait.until(EC.presence_of_element_located((By.ID, 'oneStopFrame')))
-            self.driver.switch_to.frame(iframe)
-            print("✅ 已切换到iframe")
-            
-            # 等待座位区域画布加载
-            wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, '#iez_canvas svg')))
-            print("✅ 座位区域画布已加载")
-            
-            # 先获取一次可点击区域的总数，用于日志记录和判断
-            initial_clickable_zones_script = """
-                const allElements = document.querySelectorAll('#iez_canvas svg rect, #iez_canvas svg path');
-                const clickableZones = [];
-                for (const el of allElements) {
+                # --- 恢复您原有的座位选择逻辑 ---
+                initial_clickable_zones_script = """
+                    const allElements = document.querySelectorAll('#iez_canvas svg rect, #iez_canvas svg path');
+                    const clickableZones = [];
+                    for (const el of allElements) {
                         const event = new MouseEvent('mouseover', { bubbles: true, cancelable: true, view: window });
                         el.dispatchEvent(event);
-                    if (window.getComputedStyle(el).cursor === 'pointer') {
+                        if (window.getComputedStyle(el).cursor === 'pointer') {
                             clickableZones.push(el);
-                    }
-                }
-                return clickableZones;
-            """
-            total_clickable_zones = len(self.driver.execute_script(initial_clickable_zones_script))
-            
-            if total_clickable_zones == 0:
-                print("❌ 未找到可点击的座位区域")
-                return False
-            
-            print(f"📍 找到 {total_clickable_zones} 个可点击的座位区域")
-
-            # 循环尝试每个可点击区域的索引
-            for i in range(total_clickable_zones):
-                print(f"🎯 尝试区域 {i + 1}/{total_clickable_zones}")
-                
-                # 每次循环都重新获取当前所有可点击区域
-                clickable_zones = self.driver.execute_script(initial_clickable_zones_script)
-                
-                # 检查索引是否有效
-                if i >= len(clickable_zones):
-                    print("⚠️ 可点击区域数量发生变化，提前结束")
-                    break
-                
-                # 在点击前获取当前viewBox，为智能等待做准备
-                main_svg = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, '#iez_canvas svg')))
-                old_viewbox = main_svg.get_attribute('viewBox')
-
-                zone = clickable_zones[i]
-                
-                # 点击区域
-                try:
-                    self.driver.execute_script(
-                        "arguments[0].dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }))",
-                        zone
-                    )
-                    # 智能等待，直到SVG的viewBox发生变化，表示已缩放
-                    WebDriverWait(self.driver, 5).until(
-                        lambda d: d.find_element(By.CSS_SELECTOR, '#iez_canvas svg').get_attribute('viewBox') != old_viewbox
-                    )
-                except Exception as e:
-                    print(f"⚠️ 点击区域或等待SVG加载失败: {e}")
-                    # 如果点击失败，可能需要返回并重试，或者直接跳过
-                    self.driver.execute_script("history.back();")
-                    wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, '#iez_canvas svg')))
-                    continue
-
-                # 检查是否有可用座位
-                try:
-                    WebDriverWait(self.driver, 5).until(EC.presence_of_element_located((By.CSS_SELECTOR, '#ez_canvas svg')))
-                    seat_selected = self.driver.execute_script("""
-                        const rects = document.querySelectorAll('#ez_canvas svg rect');
-                        const availableSeats = Array.from(rects).filter(rect => {
-                            const fill = rect.getAttribute('fill');
-                            return fill !== '#DDDDDD' && fill !== 'none';
-                        });
-                        if (availableSeats.length > 0) {
-                            availableSeats[0].dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-                            return true;
                         }
-                        return false;
-                    """)
-                    
-                    if seat_selected:
-                        print("✅ 成功选择座位")
-                        # 截图
-                        self._take_debug_screenshot("seat_selected")
-                        break
+                    }
+                    return clickableZones;
+                """
+                total_clickable_zones = len(self.driver.execute_script(initial_clickable_zones_script))
+            
+                if total_clickable_zones == 0:
+                    print("❌ 未找到可点击的座位区域")
+                    self._take_debug_screenshot("no_clickable_zones")
+                    return False
+            
+                print(f"📍 找到 {total_clickable_zones} 个可点击的座位区域")
+
+                seat_selection_successful = False
+                for i in range(total_clickable_zones):
+                    print(f"🎯 尝试区域 {i + 1}/{total_clickable_zones}")
+                    # 每次循环都重新获取可点击区域
+                    clickable_zones = self.driver.execute_script(initial_clickable_zones_script)
+                    if i >= len(clickable_zones):
+                        print("⚠️ DOM结构发生变化，跳过此轮尝试")
+                        continue
+            
+                    zone = clickable_zones[i]
+                    try:
+                        # 使用 dispatchEvent 以确保能可靠地点击SVG内部的区域元素
+                        self.driver.execute_script("arguments[0].dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));", zone)
+                        # 给页面一点时间来响应点击事件
+                        time.sleep(0.1)
                         
-                except Exception:
-                    # 如果座位图未加载或没有可用座位，则返回上一页重新选择区域
-                    self.driver.execute_script("history.back();")
-                    wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, '#iez_canvas svg'))) # 确保返回成功
-                    continue
-            else:
-                print("❌ 已尝试所有区域，均未找到可用座位")
+                        # 使用您原来的逻辑查找座位
+                        WebDriverWait(self.driver, 5).until(EC.presence_of_element_located((By.CSS_SELECTOR, '#ez_canvas svg')))
+                        seat_selected = self.driver.execute_script("""
+                            const rects = document.querySelectorAll('#ez_canvas svg rect');
+                            const availableSeats = Array.from(rects).filter(rect => {
+                                const fill = rect.getAttribute('fill');
+                                return fill !== '#DDDDDD' && fill !== 'none';
+                            });
+                            if (availableSeats.length > 0) {
+                                availableSeats[0].dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+                                return true;
+                            }
+                            return false;
+                        """)
+
+                        if seat_selected:
+                            print(f"  - ✅ 在区域 {i + 1} 中成功选择座位")
+                            self._take_debug_screenshot("seat_selected")
+                            seat_selection_successful = True
+                            break # 成功，跳出选区循环
+                    
+                    except Exception as e:
+                        print(f"  - 区域 {i + 1} 尝试失败: {e}，返回...")
+                        self.driver.execute_script("history.back();")
+                        iframe_wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, '#iez_canvas svg')))
+                        continue
+            
+                if not seat_selection_successful:
+                    print("❌ 已尝试所有区域，均未找到可用座位")
+                    self._take_debug_screenshot("all_zones_failed")
+                    return False
+            
+                # --- 恢复您原有的支付流程，仅在选座成功后执行 ---
+                print("💳 选座成功，开始支付流程...")
+                # 复用 iframe_wait 以保持一致的超时时间
+                
+                # 点击下一步
+                # 等待按钮变为激活状态（等待 'on' 类出现）
+                print("🔍 等待选座完成按钮变为可点击状态...")
+                iframe_wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, 'span.button.btNext.on #nextTicketSelection')))
+                print("✅ 选座完成按钮已激活")
+                element = WebDriverWait(self.driver, 10).until(EC.presence_of_element_located((By.ID, 'nextTicketSelection')))
+ 
+                self.driver.execute_script("arguments[0].click();", element)
+                print("✅ 已点击 '下一步'")
+                element = WebDriverWait(self.driver, 10).until(EC.presence_of_element_located((By.ID, 'nextPayment')))
+                self.driver.execute_script("arguments[0].click();", element)
+                
+                # 输入手机号
+                print("📱 输入手机号...")
+                phone_parts = Config.PHONE.split('-')
+                if len(phone_parts) == 3:
+                    iframe_wait.until(EC.presence_of_element_located((By.ID, 'tel1'))).send_keys(phone_parts[0])
+                    iframe_wait.until(EC.presence_of_element_located((By.ID, 'tel2'))).send_keys(phone_parts[1])
+                    iframe_wait.until(EC.presence_of_element_located((By.ID, 'tel3'))).send_keys(phone_parts[2])
+                    print(f"✅ 已输入手机号: {Config.PHONE}")
+
+                # 选择支付方式
+                print("🔄 选择支付方式...")
+                # element = iframe_wait.until(EC.element_to_be_clickable((By.ID, 'payMethodCode003')))
+                element = WebDriverWait(self.driver, 10).until(EC.presence_of_element_located((By.ID, 'payMethodCode003')))
+                self.driver.execute_script("arguments[0].click();", element)
+                element = WebDriverWait(self.driver, 10).until(EC.presence_of_element_located((By.ID, 'cashReceiptIssueCode3')))
+                self.driver.execute_script("arguments[0].click();", element)
+
+                # 选择银行
+                print("🔄 选择银行...")
+                self.driver.execute_script("""
+                    const select = document.querySelector('select[name="bankCode"]');
+                    if (select) {
+                        select.value = '88';
+                        select.dispatchEvent(new Event('change', { bubbles: true }));
+                    }
+                """)
+
+                # 同意条款
+                print("🔄 同意所有条款...")
+                element = WebDriverWait(self.driver, 10).until(EC.presence_of_element_located((By.ID, 'chkAgreeAll')))
+                self.driver.execute_script("arguments[0].click();", element)
+                
+                # 最终支付
+                print("🔄 点击最终支付...")
+                element = WebDriverWait(self.driver, 10).until(EC.presence_of_element_located((By.ID, 'btnFinalPayment')))
+                self.driver.execute_script("arguments[0].click();", element)
+                
+                print(f"🎉 最终支付已提交！... 当前时间: {datetime.now()}")
+                time.sleep(5)
+                self._take_debug_screenshot("reservation_submitted")
+                
+                return True
+                
+            finally:
+                # 确保在操作结束后切回主内容
+                self.driver.switch_to.default_content()
+                print("✅ 已切换回主页面")
+
+        except TimeoutException as e:
+            print(f"❌ 预约流程超时: {e}")
+            self._take_debug_screenshot("reservation_timeout")
             return False
-            
-            # --- 开始支付流程 ---
-            print("💳 开始支付...")
-
-            # 等待按钮变为可点击状态（等待 'on' 类出现）
-            # print("🔍 等待选座完成按钮变为可点击状态...")
-            # wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, 'span.button.btNext.on #nextTicketSelection')))
-            # print("✅ 选座完成按钮已激活")
-
-            # 点击下一步
-            element = wait.until(EC.presence_of_element_located((By.ID, 'nextTicketSelection')))
-            self.driver.execute_script("arguments[0].click();", element)
-            print("✅ 已点击 '下一步'")
-            
-            # 等待支付页面加载
-            element = wait.until(EC.presence_of_element_located((By.ID, 'nextPayment')))
-            self.driver.execute_script("arguments[0].click();", element)
-            print("✅ 已点击 '下一步支付'")
-            
-            # 输入手机号
-            print("📱 输入手机号...")
-            phone_parts = Config.PHONE.split('-')
-            if len(phone_parts) == 3:
-                wait.until(EC.presence_of_element_located((By.ID, 'tel1'))).send_keys(phone_parts[0])
-                wait.until(EC.presence_of_element_located((By.ID, 'tel2'))).send_keys(phone_parts[1])
-                wait.until(EC.presence_of_element_located((By.ID, 'tel3'))).send_keys(phone_parts[2])
-                print(f"✅ 已输入手机号: {Config.PHONE}")
-
-            # 选择支付方式
-            print("🔄 选择支付方式...")
-            element = wait.until(EC.presence_of_element_located((By.ID, 'payMethodCode003')))
-            self.driver.execute_script("arguments[0].click();", element)
-            
-            element = wait.until(EC.presence_of_element_located((By.ID, 'cashReceiptIssueCode3')))
-            self.driver.execute_script("arguments[0].click();", element)
-            
-
-            # 选择银行
-            print("🔄 选择银行...")
-            self.driver.execute_script("""
-                const select = document.querySelector('select[name="bankCode"]');
-                if (select) {
-                    select.value = '88';
-                    select.dispatchEvent(new Event('change', { bubbles: true }));
-                }
-            """)
-            
-
-            # 同意条款
-            print("🔄 同意所有条款...")
-            element = wait.until(EC.presence_of_element_located((By.ID, 'chkAgreeAll')))
-            self.driver.execute_script("arguments[0].click();", element)
-            
-            
-            # 最终支付
-            print("🔄 点击最终支付...")
-            element = wait.until(EC.presence_of_element_located((By.ID, 'btnFinalPayment')))
-            self.driver.execute_script("arguments[0].click();", element)
-            
-            print(f"⏰ 最终支付已提交！... 当前时间: {datetime.now()}")
-            # 等待10秒
-            await asyncio.sleep(10)
-            self._take_debug_screenshot("success")
-            return True
-            
         except Exception as e:
-            print(f"❌ 预约流程失败: {e}")
-            self._take_debug_screenshot("reservation_failure")
+            print(f"❌ 预约流程发生未知错误: {e}")
+            self._take_debug_screenshot("reservation_exception")
             return False
-        finally:
-            # 确保在操作结束后切回主内容
-            self.driver.switch_to.default_content()

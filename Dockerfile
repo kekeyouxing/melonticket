@@ -8,7 +8,7 @@ WORKDIR /app
 ENV LANG=ko_KR.UTF-8 \
     LANGUAGE=ko_KR:ko \
     LC_ALL=ko_KR.UTF-8 \
-    TZ=Asia/Shanghai \
+    TZ=Asia/Seoul \
     PYTHONUNBUFFERED=1 \
     PYTHONIOENCODING=utf-8
 
