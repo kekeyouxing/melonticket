@@ -10,7 +10,7 @@ class Config:
     """配置类，用于管理所有配置信息"""
     
     # Melon网站相关
-    MELON_BASE_URL = "https://ticket.melon.com/performance/index.htm?prodId=211506"
+    MELON_BASE_URL = "https://ticket.melon.com/performance/index.htm?prodId=211541"
     MELON_LOGIN_URL = "https://member.melon.com/muid/web/login/login_informM.htm"
     
     # 用户凭据
@@ -53,10 +53,9 @@ class Config:
     
     @classmethod
     def calculate_random_login_time(cls):
-        """计算随机登录时间（预约时间前5-15分钟）"""
+        """计算随机登录时间（预约时间前1-3分钟内的随机秒数）"""
         reservation_time = datetime.strptime(cls.RESERVATION_START_TIME, '%Y-%m-%d %H:%M:%S')
-        # 随机选择5-15分钟前登录
-        # minutes_before = random.randint(1, 2)
-        minutes_before = 1
-        login_time = reservation_time - timedelta(minutes=minutes_before)
+        # 随机选择1-3分钟内的随机秒数前登录
+        seconds_before = random.randint(60, 180)  # 60秒(1分钟) 到 180秒(3分钟)
+        login_time = reservation_time - timedelta(seconds=seconds_before)
         return login_time 

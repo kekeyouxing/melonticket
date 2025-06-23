@@ -32,7 +32,7 @@ class MelonTicketService:
         if not os.path.exists(data_dir):
             os.makedirs(data_dir, exist_ok=True)
     
-    def run_scheduler(self):
+    async def run_scheduler(self):
         """运行定时调度器"""
         # 验证时间是否已过期
         reservation_time = datetime.strptime(Config.RESERVATION_START_TIME, '%Y-%m-%d %H:%M:%S')
@@ -46,28 +46,51 @@ class MelonTicketService:
             print(f"❌ 计算的登录时间 {self.login_time.strftime('%Y-%m-%d %H:%M:%S')} 已过期")
             return
         
-        login_executed = False
-        reservation_executed = False
+        print(f"📅 等待登录时间: {self.login_time.strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"🎯 预约时间: {reservation_time.strftime('%Y-%m-%d %H:%M:%S')}")
         
-        while self.service_running:
-            current_time = datetime.now()
+        try:
+            # 等待到登录时间
+            while datetime.now() < self.login_time:
+                time.sleep(0.5)
             
-            # 检查是否到了登录时间
-            if not login_executed and current_time >= self.login_time:
-                print(f"⏰ 登录时间到！开始执行登录任务... [{current_time.strftime('%Y-%m-%d %H:%M:%S')}]")
-                self.execute_login_job()
-                login_executed = True
+            print(f"⏰ 登录时间到！开始执行登录... [{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}]")
             
-            # 检查是否到了预约时间
-            if not reservation_executed and current_time >= reservation_time:
-                print(f"⏰ 预约时间到！开始执行预约任务... [{current_time.strftime('%Y-%m-%d %H:%M:%S')}]")
-                self.execute_reservation_job()
-                reservation_executed = True
-                break  # 预约完成后退出循环
+            # 初始化浏览器并登录
+            self.browser = await self.init_browser()
+            if not self.browser:
+                print("❌ 浏览器初始化失败")
+                return
             
-            time.sleep(1)  # 每秒检查一次
-        
-        print("🎉 所有任务执行完成")
+            login_handler = LoginHandler(self.browser)
+            login_success = await login_handler.login()
+            if not login_success:
+                print("❌ 登录失败")
+                return
+            
+            print("✅ 登录成功，等待预约时间...")
+            
+            # 精确等待到预约时间
+            while datetime.now() < reservation_time:
+                time.sleep(0.05)  # 10毫秒精度
+            
+            print(f"⏰ 预约时间到！开始执行预约... [{datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')}]")
+            
+            # 执行预约
+            reservation_handler = ReservationHandler(self.browser)
+            reservation_success = await reservation_handler.execute_reservation()
+            
+            if reservation_success:
+                print("🎉 预约成功！")
+            else:
+                print("❌ 预约失败")
+            
+        except Exception as e:
+            print(f"❌ 调度过程出错: {e}")
+        finally:
+            if self.browser:
+                self.browser.quit()
+            print("🛑 调度任务完成")
     
     def execute_login_job(self):
         """执行登录任务"""
@@ -219,7 +242,8 @@ class MelonTicketService:
         options = ChromeOptions()
         options.add_argument("--disable-gpu")
         options.add_argument("--no-sandbox")
-        options.add_argument("window-size=1920,1080")
+        options.add_argument("--window-size=1920,1080")
+        options.add_argument("--start-maximized")
         options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/98.0.4758.102 Safari/537.36")
         options.add_argument("--lang=ko_KR")
         options.page_load_strategy = 'none'
@@ -281,8 +305,8 @@ def main():
         # 验证配置
         Config.validate()
         
-        # 立即执行测试流程
-        asyncio.run(service.run_immediately())
+        # 使用定时调度模式
+        asyncio.run(service.run_scheduler())
 
     except Exception as e:
         print(f"❌ 服务启动失败: {e}")

@@ -177,7 +177,7 @@ class ReservationHandler:
             # 1. 导航并进行初始点击
             print(f"⏰ 开始运行预约流程... 当前时间: {datetime.now()}")
             self.driver.get(Config.MELON_BASE_URL)
-            self._close_notice_popup_if_present()
+            # self._close_notice_popup_if_present()
             wait = WebDriverWait(self.driver, 20)
             
             # 选择日期和时间
