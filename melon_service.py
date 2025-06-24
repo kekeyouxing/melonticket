@@ -48,7 +48,8 @@ class MelonTicketService:
         
         print(f"📅 等待登录时间: {self.login_time.strftime('%Y-%m-%d %H:%M:%S')}")
         print(f"🎯 预约时间: {reservation_time.strftime('%Y-%m-%d %H:%M:%S')}")
-        
+        print(f"🔍 访问地址: {Config.MELON_BASE_URL}")
+
         try:
             # 等待到登录时间
             while datetime.now() < self.login_time:

@@ -127,26 +127,14 @@ class ReservationHandler:
         return False
             
     def _check_and_close_alert(self):
-        """检查并关闭JS警告框（如果存在），模仿用户提供的健壮实现."""
+        """检查并关闭JS警告框（如果存在）"""
         try:
-            # 等待最多2秒，看是否有alert出现
             alert = self.driver.switch_to.alert
-            alert_text = alert.text
-            print(f"👋 检测到JS弹窗，内容: '{alert_text}'，正在关闭...")
             alert.accept()
-            print("✅ JS弹窗已关闭")
-        except (TimeoutException, NoAlertPresentException):
+            print("弹窗已自动关闭")
+            self.driver.switch_to.default_content()
+        except NoAlertPresentException:
             pass  # 如果没有弹窗，则跳过
-
-    def _click_with_alert_handling(self, element):
-        """使用JS点击元素，并处理可能出现的JS警告框."""
-        try:
-            self.driver.execute_script("arguments[0].click();", element)
-        except UnexpectedAlertPresentException:
-            print("❌ 点击时出现意外的JS弹窗")
-            self._check_and_close_alert()
-            print("🤔 正在重试点击...")
-            self.driver.execute_script("arguments[0].click();", element) # 再次尝试点击
 
     def _close_notice_popup_if_present(self):
         """检查并关闭网站的HTML通知弹窗（如果存在）"""
@@ -174,9 +162,31 @@ class ReservationHandler:
     async def execute_reservation(self):
         """执行完整的预约流程，将所有逻辑放在一个方法内。"""
         try:
-            # 1. 导航并进行初始点击
+            # 1. 循环导航直到页面正常加载
             print(f"⏰ 开始运行预约流程... 当前时间: {datetime.now()}")
-            self.driver.get(Config.MELON_BASE_URL)
+            
+            # 循环进入页面，处理alert弹窗，直到出现正常元素
+            max_attempts = 10
+            for attempt in range(max_attempts):
+                print(f"🔄 第 {attempt + 1} 次尝试进入页面...")
+                self.driver.get(Config.MELON_BASE_URL)
+                
+                # 检测并关闭alert弹窗
+                self._check_and_close_alert()
+                
+                # 检查是否出现了正常的页面元素
+                try:
+                    wait = WebDriverWait(self.driver, 3)
+                    wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, '#list_date li button')))
+                    print("✅ 页面正常加载，找到日期选择元素")
+                    break
+                except TimeoutException:
+                    print(f"⚠️ 第 {attempt + 1} 次尝试未找到日期元素，继续重试...")
+                    if attempt == max_attempts - 1:
+                        print("❌ 已达最大重试次数，页面可能存在问题")
+                        return False
+                    time.sleep(0.3)  # 等待1秒后重试
+            
             # self._close_notice_popup_if_present()
             wait = WebDriverWait(self.driver, 20)
             
@@ -187,11 +197,13 @@ class ReservationHandler:
             print("✅ 时间点击完成")
             wait.until(EC.presence_of_element_located((By.ID, 'ticketReservation_Btn'))).click()
             print("✅ 已点击预约按钮")
-
+            self._check_and_close_alert()
             # 2. 切换到新窗口并处理验证码
             print("🔍 等待新窗口出现...")
+            # 截图
+            self._take_debug_screenshot("reservation_window")
             original_window = self.driver.current_window_handle
-            WebDriverWait(self.driver, 20).until(lambda d: len(d.window_handles) > 1)
+            WebDriverWait(self.driver, 3600).until(lambda d: len(d.window_handles) > 1)
             new_window = [window for window in self.driver.window_handles if window != original_window][0]
             self.driver.switch_to.window(new_window)
             
